@@ -1,0 +1,6 @@
+debug/
+target/
+**/*.rs.bk
+**/*.DS_Store
+.vscode/
+todo.txt
