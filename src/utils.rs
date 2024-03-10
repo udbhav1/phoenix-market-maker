@@ -1,8 +1,14 @@
 use anyhow::anyhow;
+use base64::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Read;
+use std::mem::size_of;
 
-use phoenix_sdk::sdk_client::{MarketMetadata, SDKClient};
+use phoenix::program::{dispatch_market::load_with_dispatch, MarketHeader};
+use phoenix::state::markets::FIFOOrderId;
+use phoenix_sdk::orderbook::Orderbook;
+use phoenix_sdk::sdk_client::{MarketMetadata, PhoenixOrder, SDKClient};
 use solana_sdk::signature::{read_keypair_file, Keypair};
 
 // phoenix_sdk::sdk_client::JsonMarketConfig with token array
@@ -144,4 +150,48 @@ pub fn get_market_metadata_from_header_bytes(
     bytemuck::try_from_bytes(header_bytes)
         .map_err(|_| anyhow!("Failed to deserialize market header"))
         .and_then(MarketMetadata::from_header)
+}
+
+pub fn get_book_from_data(
+    data: Vec<String>,
+) -> anyhow::Result<Orderbook<FIFOOrderId, PhoenixOrder>> {
+    // from solana-account-decoder
+    // UiAccountData::Binary(blob, encoding) => match encoding {
+    //     UiAccountEncoding::Base58 => bs58::decode(blob).into_vec().ok(),
+    //     UiAccountEncoding::Base64 => base64::decode(blob).ok(),
+    //     UiAccountEncoding::Base64Zstd => base64::decode(blob).ok().and_then(|zstd_data| {
+    //         let mut data = vec![];
+    //         zstd::stream::read::Decoder::new(zstd_data.as_slice())
+    //             .and_then(|mut reader| reader.read_to_end(&mut data))
+    //             .map(|_| data)
+    //             .ok()
+    //     }),
+    let blob = &data[0];
+    let encoding = &data[1];
+    let data = match &encoding[..] {
+        "base58" => unimplemented!(),
+        "base64" => unimplemented!(),
+        "base64+zstd" => Ok(BASE64_STANDARD.decode(blob).ok().and_then(|zstd_data| {
+            let mut data: Vec<u8> = vec![];
+            zstd::stream::read::Decoder::new(zstd_data.as_slice())
+                .and_then(|mut reader| reader.read_to_end(&mut data))
+                .map(|_| data)
+                .ok()
+        })),
+        _ => Err(anyhow!("Received unknown data encoding: {}", encoding)),
+    }?
+    .ok_or(anyhow!("Failed to decode data"))?;
+
+    // from phoenix_sdk::sdk_client::SDKClient.get_market_state()
+    let (header_bytes, bytes) = data.split_at(size_of::<MarketHeader>());
+    let meta = get_market_metadata_from_header_bytes(header_bytes)?;
+    let market = load_with_dispatch(&meta.market_size_params, bytes)
+        .map_err(|_| anyhow!("Market configuration not found"))?
+        .inner;
+
+    Ok(Orderbook::from_market(
+        market,
+        meta.raw_base_units_per_base_lot(),
+        meta.quote_units_per_raw_base_unit_per_tick(),
+    ))
 }
