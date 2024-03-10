@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use phoenix_sdk::sdk_client::SDKClient;
+use phoenix_sdk::sdk_client::{MarketMetadata, SDKClient};
 use solana_sdk::signature::{read_keypair_file, Keypair};
 
 // phoenix_sdk::sdk_client::JsonMarketConfig with token array
@@ -136,4 +136,12 @@ pub fn get_ws_url(network_str: &str, api_key: &str) -> anyhow::Result<String> {
         "helius_devnet" => Ok(format!("wss://devnet.helius-rpc.com/?api-key={}", api_key)),
         _ => Err(anyhow!("Invalid network provided: {}", network_str)),
     }
+}
+
+pub fn get_market_metadata_from_header_bytes(
+    header_bytes: &[u8],
+) -> anyhow::Result<MarketMetadata> {
+    bytemuck::try_from_bytes(header_bytes)
+        .map_err(|_| anyhow!("Failed to deserialize market header"))
+        .and_then(MarketMetadata::from_header)
 }
