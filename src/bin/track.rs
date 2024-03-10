@@ -1,21 +1,77 @@
 extern crate phoenix_market_maker;
-use phoenix_market_maker::utils::{get_network, parse_market_config, MasterDefinitions};
+use phoenix_market_maker::utils::{
+    get_network, get_payer_keypair_from_path, get_ws_url, parse_market_config, MasterDefinitions,
+};
 
 use anyhow::anyhow;
 use clap::Parser;
+use futures::{SinkExt, StreamExt};
 use std::env;
 use std::str::FromStr;
 use std::time::Instant;
+use tokio::time::{sleep, Duration};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use url::Url;
 
 use phoenix_sdk::sdk_client::SDKClient;
 use solana_cli_config::{Config, CONFIG_FILE};
-use solana_sdk::{
-    pubkey::Pubkey,
-    signature::{read_keypair_file, Keypair},
-};
+use solana_sdk::pubkey::Pubkey;
 
-pub fn get_payer_keypair_from_path(path: &str) -> anyhow::Result<Keypair> {
-    read_keypair_file(&*shellexpand::tilde(path)).map_err(|e| anyhow!(e.to_string()))
+const ACCOUNT_SUBSCRIBE_JSON: &str = r#"{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "accountSubscribe",
+  "params": [
+    "{}",
+    {
+      "encoding": "jsonParsed",
+      "commitment": "confirmed"
+    }
+  ]
+  }"#;
+
+async fn connect_and_run(
+    url: Url,
+    subscribe_msg: Message,
+    sdk_client: &SDKClient,
+) -> anyhow::Result<()> {
+    let (ws_stream, _) = connect_async(url).await?;
+    println!("Connected to websocket");
+
+    let (mut write, mut read) = ws_stream.split();
+    write.send(subscribe_msg).await?;
+
+    let mut i = 1;
+    while let Some(message) = read.next().await {
+        match message {
+            Ok(msg) => match msg {
+                Message::Text(s) => {
+                    println!("Received text #{}", i);
+                    i += 1
+                }
+                _ => {}
+            },
+            Err(e) => {
+                println!("Websocket received error message: {:?}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run(ws_url: &str, sdk_client: &SDKClient, market_address: &str) {
+    let url = Url::from_str(ws_url).expect("Failed to parse websocket url");
+    let subscribe_msg = Message::Text(ACCOUNT_SUBSCRIBE_JSON.replace("{}", market_address));
+
+    loop {
+        if let Err(e) = connect_and_run(url.clone(), subscribe_msg.clone(), &sdk_client).await {
+            println!("Websocket disconnected with error: {:?}", e);
+            println!("Sleeping...");
+            sleep(Duration::from_secs(5)).await;
+            println!("Attempting to reconnect...");
+        }
+    }
 }
 
 #[derive(Parser)]
@@ -40,6 +96,8 @@ struct Args {
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv()?;
+    let api_key = env::var("HELIUS_API_KEY")?;
+
     let args = Args::parse();
 
     let config = match CONFIG_FILE.as_ref() {
@@ -50,11 +108,8 @@ pub async fn main() -> anyhow::Result<()> {
         None => Config::default(),
     };
     let trader = get_payer_keypair_from_path(&args.keypair_path.unwrap_or(config.keypair_path))?;
-    let network_url = &get_network(
-        &args.url.unwrap_or(config.json_rpc_url),
-        &env::var("HELIUS_API_KEY")?,
-    )
-    .to_string();
+    let provided_network = args.url.clone().unwrap_or(config.json_rpc_url);
+    let network_url = &get_network(&provided_network, &api_key)?.to_string();
 
     let mut sdk = SDKClient::new(&trader, network_url).await?;
 
@@ -86,21 +141,27 @@ pub async fn main() -> anyhow::Result<()> {
 
     sdk.add_market(&market_pubkey).await?;
 
-    // let ladder = sdk.get_market_ladder(&market_pubkey, 10).await?;
+    // let mut time_taken = 0;
+    // let n = 10;
+    // for _ in 0..n {
+    //     print!("\x1B[2J\x1B[1;1H");
 
-    let mut time_taken = 0;
-    let n = 10;
-    for _ in 0..n {
-        print!("\x1B[2J\x1B[1;1H");
-        let start = Instant::now();
-        let orderbook = sdk.get_market_orderbook(&market_pubkey).await?;
-        let elapsed = start.elapsed();
-        time_taken += elapsed.as_millis();
+    //     let start = Instant::now();
+    //     let orderbook = sdk.get_market_orderbook(&market_pubkey).await?;
+    //     let elapsed = start.elapsed();
+    //     time_taken += elapsed.as_millis();
 
-        orderbook.print_ladder(5, 4);
-        println!("Fetch time: {}ms", elapsed.as_millis());
-    }
-    println!("Average time taken: {}ms", time_taken / n);
+    //     orderbook.print_ladder(5, 4);
+    //     println!("Fetch time: {}ms", elapsed.as_millis());
+    // }
+    // println!("Average time taken: {}ms", time_taken / n);
+
+    run(
+        &get_ws_url(&provided_network, &api_key)?,
+        &sdk,
+        &market_address,
+    )
+    .await;
 
     Ok(())
 }

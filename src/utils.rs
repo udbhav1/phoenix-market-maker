@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use phoenix_sdk::sdk_client::SDKClient;
+use solana_sdk::signature::{read_keypair_file, Keypair};
 
 // phoenix_sdk::sdk_client::JsonMarketConfig with token array
 #[derive(Debug, Serialize, Deserialize)]
@@ -106,14 +107,33 @@ pub async fn parse_market_config(sdk_client: &SDKClient) -> anyhow::Result<Maste
     Ok(master_defs)
 }
 
-pub fn get_network(network_str: &str, api_key: &str) -> String {
+pub fn get_payer_keypair_from_path(path: &str) -> anyhow::Result<Keypair> {
+    read_keypair_file(&*shellexpand::tilde(path)).map_err(|e| anyhow!(e.to_string()))
+}
+
+pub fn get_network(network_str: &str, api_key: &str) -> anyhow::Result<String> {
     match network_str {
-        "devnet" | "dev" | "d" => "https://api.devnet.solana.com".to_owned(),
+        "devnet" | "dev" | "d" => Ok("https://api.devnet.solana.com".to_owned()),
         "mainnet" | "main" | "m" | "mainnet-beta" => {
-            "https://api.mainnet-beta.solana.com".to_owned()
+            Ok("https://api.mainnet-beta.solana.com".to_owned())
         }
-        "helius_mainnet" => format!("https://mainnet.helius-rpc.com/?api-key={}", api_key),
-        "helius_devnet" => format!("https://devnet.helius-rpc.com/?api-key={}", api_key),
-        _ => network_str.to_owned(),
+
+        "helius_mainnet" => Ok(format!(
+            "https://mainnet.helius-rpc.com/?api-key={}",
+            api_key
+        )),
+        "helius_devnet" => Ok(format!(
+            "https://devnet.helius-rpc.com/?api-key={}",
+            api_key
+        )),
+        _ => Err(anyhow!("Invalid network provided: {}", network_str)),
+    }
+}
+
+pub fn get_ws_url(network_str: &str, api_key: &str) -> anyhow::Result<String> {
+    match network_str {
+        "helius_mainnet" => Ok(format!("wss://mainnet.helius-rpc.com/?api-key={}", api_key)),
+        "helius_devnet" => Ok(format!("wss://devnet.helius-rpc.com/?api-key={}", api_key)),
+        _ => Err(anyhow!("Invalid network provided: {}", network_str)),
     }
 }
