@@ -105,3 +105,15 @@ pub async fn parse_market_config(sdk_client: &SDKClient) -> anyhow::Result<Maste
 
     Ok(master_defs)
 }
+
+pub fn get_network(network_str: &str, api_key: &str) -> String {
+    match network_str {
+        "devnet" | "dev" | "d" => "https://api.devnet.solana.com".to_owned(),
+        "mainnet" | "main" | "m" | "mainnet-beta" => {
+            "https://api.mainnet-beta.solana.com".to_owned()
+        }
+        "helius_mainnet" => format!("https://mainnet.helius-rpc.com/?api-key={}", api_key),
+        "helius_devnet" => format!("https://devnet.helius-rpc.com/?api-key={}", api_key),
+        _ => network_str.to_owned(),
+    }
+}

@@ -1,9 +1,11 @@
 extern crate phoenix_market_maker;
-use phoenix_market_maker::utils::{parse_market_config, MasterDefinitions};
+use phoenix_market_maker::utils::{get_network, parse_market_config, MasterDefinitions};
 
 use anyhow::anyhow;
 use clap::Parser;
+use std::env;
 use std::str::FromStr;
+use std::time::Instant;
 
 use phoenix_sdk::sdk_client::SDKClient;
 use solana_cli_config::{Config, CONFIG_FILE};
@@ -16,27 +18,17 @@ pub fn get_payer_keypair_from_path(path: &str) -> anyhow::Result<Keypair> {
     read_keypair_file(&*shellexpand::tilde(path)).map_err(|e| anyhow!(e.to_string()))
 }
 
-pub fn get_network(network_str: &str) -> &str {
-    match network_str {
-        "devnet" | "dev" | "d" => "https://api.devnet.solana.com",
-        "mainnet" | "main" | "m" | "mainnet-beta" => "https://api.mainnet-beta.solana.com",
-        "localnet" | "localhost" | "l" | "local" => "http://localhost:8899",
-        _ => network_str,
-    }
-}
-
 #[derive(Parser)]
 struct Args {
-    /// Optionally, use your own RPC endpoint by passing into the -u flag.
+    /// Optionally use your own RPC endpoint by passing into the -u flag.
     #[clap(short, long)]
     url: Option<String>,
 
-    // #[clap(short, long)]
-    // market: Pubkey,
-    //
+    /// Case insensitive: sol, bonk, jto, jup, etc.
     #[clap(short, long)]
     base_symbol: String,
 
+    /// Case insensitive: usdc, sol, usdt, etc.
     #[clap(short, long)]
     quote_symbol: String,
 
@@ -47,6 +39,7 @@ struct Args {
 
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv()?;
     let args = Args::parse();
 
     let config = match CONFIG_FILE.as_ref() {
@@ -57,7 +50,11 @@ pub async fn main() -> anyhow::Result<()> {
         None => Config::default(),
     };
     let trader = get_payer_keypair_from_path(&args.keypair_path.unwrap_or(config.keypair_path))?;
-    let network_url = &get_network(&args.url.unwrap_or(config.json_rpc_url)).to_string();
+    let network_url = &get_network(
+        &args.url.unwrap_or(config.json_rpc_url),
+        &env::var("HELIUS_API_KEY")?,
+    )
+    .to_string();
 
     let mut sdk = SDKClient::new(&trader, network_url).await?;
 
@@ -87,14 +84,23 @@ pub async fn main() -> anyhow::Result<()> {
         base_symbol, quote_symbol, market_address
     );
 
-    sdk.add_market(&Pubkey::from_str(&market_address)?).await?;
+    sdk.add_market(&market_pubkey).await?;
 
-    let ladder = sdk.get_market_ladder(&market_pubkey, 10).await?;
-    println!("{:?}", ladder);
+    // let ladder = sdk.get_market_ladder(&market_pubkey, 10).await?;
 
-    let orderbook = sdk.get_market_orderbook(&market_pubkey).await?;
+    let mut time_taken = 0;
+    let n = 10;
+    for _ in 0..n {
+        print!("\x1B[2J\x1B[1;1H");
+        let start = Instant::now();
+        let orderbook = sdk.get_market_orderbook(&market_pubkey).await?;
+        let elapsed = start.elapsed();
+        time_taken += elapsed.as_millis();
 
-    orderbook.print_ladder(5, 4);
+        orderbook.print_ladder(5, 4);
+        println!("Fetch time: {}ms", elapsed.as_millis());
+    }
+    println!("Average time taken: {}ms", time_taken / n);
 
     Ok(())
 }
