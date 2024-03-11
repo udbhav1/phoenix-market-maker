@@ -1,14 +1,18 @@
 extern crate phoenix_market_maker;
 use phoenix_market_maker::utils::{
-    get_book_from_data, get_network, get_payer_keypair_from_path, get_ws_url, parse_market_config,
+    book_to_aggregated_levels, get_book_from_account_data, get_network,
+    get_payer_keypair_from_path, get_time_ms, get_ws_url, parse_market_config, Book,
     MasterDefinitions,
 };
 
 use anyhow::anyhow;
 use clap::Parser;
+use csv::Writer;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::fs::{File, OpenOptions};
+use std::path::Path;
 use std::str::FromStr;
 use std::time::Instant;
 use tokio::time::{sleep, Duration};
@@ -74,7 +78,77 @@ struct AccountSubscriptionConfirmation {
     id: u64,
 }
 
-async fn connect_and_run(url: Url, subscribe_msg: Message) -> anyhow::Result<()> {
+fn generate_csv_columns(levels: usize) -> Vec<String> {
+    let mut columns = vec!["timestamp".to_string(), "slot".to_string()];
+    for i in 1..=levels {
+        columns.push(format!("BID{}", i));
+        columns.push(format!("BID_SIZE{}", i));
+        columns.push(format!("ASK{}", i));
+        columns.push(format!("ASK_SIZE{}", i));
+    }
+
+    columns
+}
+
+fn generate_csv_row(
+    timestamp: u64,
+    slot: u64,
+    bids: &[(f64, f64)],
+    asks: &[(f64, f64)],
+    levels: usize,
+    precision: usize,
+) -> Vec<String> {
+    let mut row = vec![timestamp.to_string(), slot.to_string()];
+    for i in 0..levels {
+        if i < bids.len() {
+            row.push(format!("{:.1$}", bids[i].0, precision));
+            row.push(format!("{:.1$}", bids[i].1, precision));
+        } else {
+            row.push("".to_string());
+            row.push("".to_string());
+        }
+        if i < asks.len() {
+            row.push(format!("{:.1$}", asks[i].0, precision));
+            row.push(format!("{:.1$}", asks[i].1, precision));
+        } else {
+            row.push("".to_string());
+            row.push("".to_string());
+        }
+    }
+
+    row
+}
+
+fn process_book(
+    orderbook: &Book,
+    timestamp: u64,
+    slot: u64,
+    csv_writer: Option<&mut Writer<File>>,
+) -> anyhow::Result<()> {
+    let levels: usize = env::var("TRACK_BOOK_LEVELS")?.parse()?;
+    let precision: usize = env::var("TRACK_BOOK_PRECISION")?.parse()?;
+
+    let (bids, asks) = book_to_aggregated_levels(&orderbook, levels);
+
+    match csv_writer {
+        Some(w) => {
+            let row = generate_csv_row(timestamp, slot, &bids, &asks, levels, precision);
+            w.write_record(&row)?;
+            w.flush()?;
+        }
+        None => {
+            println!("No CSV provided, skipping writing book");
+        }
+    }
+
+    Ok(())
+}
+
+async fn connect_and_run(
+    url: Url,
+    subscribe_msg: Message,
+    mut csv_writer: Option<&mut Writer<File>>,
+) -> anyhow::Result<()> {
     let (ws_stream, _) = connect_async(url).await?;
     println!("Connected to websocket");
 
@@ -93,23 +167,28 @@ async fn connect_and_run(url: Url, subscribe_msg: Message) -> anyhow::Result<()>
                         println!("Subscription confirmed with ID: {}", confirmation.result);
                         is_first_message = false;
                     } else {
+                        let recv_ts = get_time_ms()?;
+
                         println!("Received message #{}", i);
                         i += 1;
 
-                        let start = Instant::now();
                         let parsed: AccountSubscribeResponse = serde_json::from_str(&s)?;
-                        let elapsed = start.elapsed();
-                        println!("  - Serde took {}ms", elapsed.as_millis());
 
                         let start = Instant::now();
-                        let orderbook = get_book_from_data(parsed.params.result.value.data)?;
+                        let orderbook =
+                            get_book_from_account_data(parsed.params.result.value.data)?;
                         let elapsed = start.elapsed();
                         println!(
                             "  - Decode + orderbook construction took {}ms",
                             elapsed.as_millis()
                         );
 
+                        let slot = parsed.params.result.context.slot;
+
                         orderbook.print_ladder(5, 4);
+
+                        let writer_ref = csv_writer.as_mut().map(|w| &mut **w);
+                        process_book(&orderbook, recv_ts, slot, writer_ref)?;
                     }
                 }
                 _ => {}
@@ -123,12 +202,20 @@ async fn connect_and_run(url: Url, subscribe_msg: Message) -> anyhow::Result<()>
     Ok(())
 }
 
-async fn run(ws_url: &str, market_address: &str) {
+async fn run(
+    ws_url: &str,
+    market_address: &str,
+    mut csv_writer: Option<&mut Writer<File>>,
+) -> anyhow::Result<()> {
     let url = Url::from_str(ws_url).expect("Failed to parse websocket url");
     let subscribe_msg = Message::Text(ACCOUNT_SUBSCRIBE_JSON.replace("{}", market_address));
 
     loop {
-        if let Err(e) = connect_and_run(url.clone(), subscribe_msg.clone()).await {
+        // i am nowhere near good enough at rust to know if this is the right way to do this
+        // but it allows me to pass csv_writer to connect_and_run in the loop
+        let writer_ref = csv_writer.as_mut().map(|w| &mut **w);
+
+        if let Err(e) = connect_and_run(url.clone(), subscribe_msg.clone(), writer_ref).await {
             println!("Websocket disconnected with error: {:?}", e);
             println!("Sleeping...");
             sleep(Duration::from_secs(5)).await;
@@ -150,6 +237,10 @@ struct Args {
     /// Case insensitive: usdc, sol, usdt, etc.
     #[clap(short, long)]
     quote_symbol: String,
+
+    /// CSV path to dump data to.
+    #[clap(short, long)]
+    output: Option<String>,
 
     /// Optionally include your keypair path. Defaults to your Solana CLI config file.
     #[clap(short, long)]
@@ -204,22 +295,36 @@ pub async fn main() -> anyhow::Result<()> {
 
     sdk.add_market(&market_pubkey).await?;
 
-    // let mut time_taken = 0;
-    // let n = 10;
-    // for _ in 0..n {
-    //     print!("\x1B[2J\x1B[1;1H");
+    let mut csv_writer = if let Some(path) = args.output {
+        let path = Path::new(&path);
+        let file_exists = path.exists();
 
-    //     let start = Instant::now();
-    //     let orderbook = sdk.get_market_orderbook(&market_pubkey).await?;
-    //     let elapsed = start.elapsed();
-    //     time_taken += elapsed.as_millis();
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(true)
+            .open(&path)?;
 
-    //     orderbook.print_ladder(5, 4);
-    //     println!("Fetch time: {}ms", elapsed.as_millis());
-    // }
-    // println!("Average time taken: {}ms", time_taken / n);
+        let mut writer = Writer::from_writer(file);
 
-    run(&get_ws_url(&provided_network, &api_key)?, &market_address).await;
+        // If the file was newly created (or is empty), write the headers
+        if !file_exists || std::fs::metadata(&path)?.len() == 0 {
+            let levels: usize = env::var("TRACK_BOOK_LEVELS")?.parse()?;
+            let columns = generate_csv_columns(levels);
+            writer.write_record(&columns)?;
+        }
+
+        Some(writer)
+    } else {
+        None
+    };
+
+    run(
+        &get_ws_url(&provided_network, &api_key)?,
+        &market_address,
+        csv_writer.as_mut(),
+    )
+    .await?;
 
     Ok(())
 }

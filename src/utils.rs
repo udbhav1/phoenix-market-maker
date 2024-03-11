@@ -1,15 +1,19 @@
 use anyhow::anyhow;
 use base64::prelude::*;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
 use std::mem::size_of;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use phoenix::program::{dispatch_market::load_with_dispatch, MarketHeader};
 use phoenix::state::markets::FIFOOrderId;
-use phoenix_sdk::orderbook::Orderbook;
+use phoenix_sdk::orderbook::{Orderbook, OrderbookKey, OrderbookValue};
 use phoenix_sdk::sdk_client::{MarketMetadata, PhoenixOrder, SDKClient};
 use solana_sdk::signature::{read_keypair_file, Keypair};
+
+pub type Book = Orderbook<FIFOOrderId, PhoenixOrder>;
 
 // phoenix_sdk::sdk_client::JsonMarketConfig with token array
 #[derive(Debug, Serialize, Deserialize)]
@@ -152,9 +156,7 @@ pub fn get_market_metadata_from_header_bytes(
         .and_then(MarketMetadata::from_header)
 }
 
-pub fn get_book_from_data(
-    data: Vec<String>,
-) -> anyhow::Result<Orderbook<FIFOOrderId, PhoenixOrder>> {
+pub fn get_book_from_account_data(data: Vec<String>) -> anyhow::Result<Book> {
     // from solana-account-decoder
     // UiAccountData::Binary(blob, encoding) => match encoding {
     //     UiAccountEncoding::Base58 => bs58::decode(blob).into_vec().ok(),
@@ -194,4 +196,45 @@ pub fn get_book_from_data(
         meta.raw_base_units_per_base_lot(),
         meta.quote_units_per_raw_base_unit_per_tick(),
     ))
+}
+
+pub fn book_to_aggregated_levels(
+    orderbook: &Book,
+    levels: usize,
+) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+    let bids = orderbook
+        .get_bids()
+        .iter()
+        .rev()
+        .group_by(|(price, _)| price.price() * orderbook.quote_units_per_raw_base_unit_per_tick)
+        .into_iter()
+        .map(|(price, group)| {
+            let size = group.map(|(_, size)| size.size()).sum::<f64>()
+                * orderbook.raw_base_units_per_base_lot;
+            (price, size)
+        })
+        .take(levels)
+        .collect::<Vec<_>>();
+
+    let asks = orderbook
+        .get_asks()
+        .iter()
+        .group_by(|(price, _)| price.price() * orderbook.quote_units_per_raw_base_unit_per_tick)
+        .into_iter()
+        .map(|(price, group)| {
+            let size = group.map(|(_, size)| size.size()).sum::<f64>()
+                * orderbook.raw_base_units_per_base_lot;
+            (price, size)
+        })
+        .take(levels)
+        .collect::<Vec<_>>();
+
+    (bids, asks)
+}
+
+pub fn get_time_ms() -> anyhow::Result<u64> {
+    let now = SystemTime::now();
+    let since_epoch = now.duration_since(UNIX_EPOCH)?;
+
+    Ok(since_epoch.as_secs() * 1_000 + since_epoch.subsec_millis() as u64)
 }
