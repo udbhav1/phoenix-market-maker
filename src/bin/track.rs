@@ -1,6 +1,6 @@
 extern crate phoenix_market_maker;
 use phoenix_market_maker::utils::{
-    book_to_aggregated_levels, get_book_from_account_data, get_network,
+    book_to_aggregated_levels, get_book_from_account_data, get_ladder, get_network,
     get_payer_keypair_from_path, get_time_ms, get_ws_url, parse_market_config, Book,
     MasterDefinitions,
 };
@@ -14,9 +14,12 @@ use std::env;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::str::FromStr;
-use std::time::Instant;
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+#[allow(unused_imports)]
+use tracing::{debug, error, info, trace, warn};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
 
 use phoenix_sdk::sdk_client::SDKClient;
@@ -137,7 +140,7 @@ fn process_book(
             w.flush()?;
         }
         None => {
-            println!("No CSV provided, skipping writing book");
+            debug!("No CSV writer provided, skipping writing book");
         }
     }
 
@@ -150,7 +153,7 @@ async fn connect_and_run(
     mut csv_writer: Option<&mut Writer<File>>,
 ) -> anyhow::Result<()> {
     let (ws_stream, _) = connect_async(url).await?;
-    println!("Connected to websocket");
+    info!("Connected to websocket");
 
     let (mut write, mut read) = ws_stream.split();
     write.send(subscribe_msg).await?;
@@ -164,28 +167,25 @@ async fn connect_and_run(
                     if is_first_message {
                         let confirmation: AccountSubscriptionConfirmation =
                             serde_json::from_str(&s)?;
-                        println!("Subscription confirmed with ID: {}", confirmation.result);
+                        debug!("Subscription confirmed with ID: {}", confirmation.result);
                         is_first_message = false;
                     } else {
                         let recv_ts = get_time_ms()?;
 
-                        println!("Received message #{}", i);
+                        info!("Received message #{}", i);
                         i += 1;
 
                         let parsed: AccountSubscribeResponse = serde_json::from_str(&s)?;
 
-                        let start = Instant::now();
                         let orderbook =
                             get_book_from_account_data(parsed.params.result.value.data)?;
-                        let elapsed = start.elapsed();
-                        println!(
-                            "  - Decode + orderbook construction took {}ms",
-                            elapsed.as_millis()
-                        );
 
                         let slot = parsed.params.result.context.slot;
 
-                        orderbook.print_ladder(5, 4);
+                        // just to
+                        let precision: usize = env::var("TRACK_BOOK_PRECISION")?.parse()?;
+                        let ladder_str = get_ladder(&orderbook, 5, precision);
+                        debug!("Market Ladder:\n{}", ladder_str);
 
                         let writer_ref = csv_writer.as_mut().map(|w| &mut **w);
                         process_book(&orderbook, recv_ts, slot, writer_ref)?;
@@ -194,7 +194,7 @@ async fn connect_and_run(
                 _ => {}
             },
             Err(e) => {
-                println!("Websocket received error message: {:?}", e);
+                warn!("Websocket received error message: {:?}", e);
             }
         }
     }
@@ -209,6 +209,7 @@ async fn run(
 ) -> anyhow::Result<()> {
     let url = Url::from_str(ws_url).expect("Failed to parse websocket url");
     let subscribe_msg = Message::Text(ACCOUNT_SUBSCRIBE_JSON.replace("{}", market_address));
+    let sleep_time: u64 = env::var("SLEEP_SEC_BETWEEN_WS_CONNECT")?.parse()?;
 
     loop {
         // i am nowhere near good enough at rust to know if this is the right way to do this
@@ -216,17 +217,16 @@ async fn run(
         let writer_ref = csv_writer.as_mut().map(|w| &mut **w);
 
         if let Err(e) = connect_and_run(url.clone(), subscribe_msg.clone(), writer_ref).await {
-            println!("Websocket disconnected with error: {:?}", e);
-            println!("Sleeping...");
-            sleep(Duration::from_secs(5)).await;
-            println!("Attempting to reconnect...");
+            info!("Websocket disconnected with error: {:?}", e);
+            info!("Attempting to reconnect after {}s...", sleep_time);
+            sleep(Duration::from_secs(sleep_time)).await;
         }
     }
 }
 
 #[derive(Parser)]
 struct Args {
-    /// Optionally use your own RPC endpoint by passing into the -u flag.
+    /// RPC endpoint: devnet, mainnet, helius_devnet, helius_mainnet, etc.
     #[clap(short, long)]
     url: Option<String>,
 
@@ -238,11 +238,15 @@ struct Args {
     #[clap(short, long)]
     quote_symbol: String,
 
-    /// CSV path to dump data to.
+    /// Optional CSV path to dump book to.
     #[clap(short, long)]
     output: Option<String>,
 
-    /// Optionally include your keypair path. Defaults to your Solana CLI config file.
+    /// Optional log file path to mirror stdout.
+    #[clap(short, long, default_value = "./logs/app.log")]
+    log: String,
+
+    /// Optional keypair path. Defaults to Solana CLI config file.
     #[clap(short, long)]
     keypair_path: Option<String>,
 }
@@ -250,13 +254,32 @@ struct Args {
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv()?;
+
     let api_key = env::var("HELIUS_API_KEY")?;
+    let log_level = env::var("LOG_LEVEL")?;
 
     let args = Args::parse();
 
+    // log to both stdout and file
+    let log_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(true)
+        .open(args.log)?;
+    let file_appender = tracing_subscriber::fmt::layer()
+        .with_writer(log_file)
+        .with_ansi(false);
+    let stdout_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stdout);
+
+    tracing_subscriber::registry()
+        .with(stdout_layer)
+        .with(file_appender)
+        .with(EnvFilter::new(log_level))
+        .init();
+
     let config = match CONFIG_FILE.as_ref() {
         Some(config_file) => Config::load(config_file).unwrap_or_else(|_| {
-            println!("Failed to load personal config file: {}", config_file);
+            warn!("Failed to load personal config file: {}", config_file);
             Config::default()
         }),
         None => Config::default(),
@@ -288,8 +311,8 @@ pub async fn main() -> anyhow::Result<()> {
     let market_address = master_defs.get_market_address(base_mint, quote_mint)?;
     let market_pubkey = Pubkey::from_str(&market_address)?;
 
-    println!(
-        "Market address for {}/{}: {}",
+    info!(
+        "Found market address for {}/{}: {}",
         base_symbol, quote_symbol, market_address
     );
 
@@ -313,9 +336,10 @@ pub async fn main() -> anyhow::Result<()> {
             let columns = generate_csv_columns(levels);
             writer.write_record(&columns)?;
         }
-
+        info!("Dumping books to: {}", path.display());
         Some(writer)
     } else {
+        info!("No CSV provided, not dumping books");
         None
     };
 

@@ -232,6 +232,30 @@ pub fn book_to_aggregated_levels(
     (bids, asks)
 }
 
+// this is the second half of phoenix_sdk_core::Orderbook.print_ladder()
+// but returns a string instead of using println!() since i want to use tracing
+pub fn get_ladder(orderbook: &Book, levels: usize, precision: usize) -> String {
+    let mut out = Vec::new();
+    let width = 15;
+
+    let (bids, asks) = book_to_aggregated_levels(orderbook, levels as usize);
+
+    for (ask_price, ask_size) in asks.into_iter().rev() {
+        let p = format!("{:.1$}", ask_price, precision);
+        let s = format!("{:.1$}", ask_size, precision);
+        let str = format!("{:width$} {:^width$} {:<width$}", "", p, s);
+        out.push(str);
+    }
+    for (bid_price, bid_size) in bids {
+        let p = format!("{:.1$}", bid_price, precision);
+        let s = format!("{:.1$}", bid_size, precision);
+        let str = format!("{:>width$} {:^width$} {:width$}", s, p, "");
+        out.push(str);
+    }
+
+    out.join("\n")
+}
+
 pub fn get_time_ms() -> anyhow::Result<u64> {
     let now = SystemTime::now();
     let since_epoch = now.duration_since(UNIX_EPOCH)?;
