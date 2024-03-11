@@ -3,9 +3,12 @@ todo.txt
 .env
 data/*
 !data/.gitkeep
+notebooks/data/*
+!notebooks/data/.gitkeep
 logs/*
 !logs/.gitkeep
 
+**/*.ipynb_checkpoints/
 debug/
 target/
 **/*.rs.bk
