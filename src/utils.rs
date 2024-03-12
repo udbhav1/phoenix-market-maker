@@ -173,6 +173,20 @@ pub fn get_ws_url(network_str: &str, api_key: &str) -> anyhow::Result<String> {
     }
 }
 
+pub fn get_enhanced_ws_url(network_str: &str, api_key: &str) -> anyhow::Result<String> {
+    match network_str {
+        "helius_mainnet" => Ok(format!(
+            "wss://atlas-mainnet.helius-rpc.com?api-key={}",
+            api_key
+        )),
+        "helius_devnet" => Ok(format!(
+            "wss://atlas-devnet.helius-rpc.com?api-key={}",
+            api_key
+        )),
+        _ => Err(anyhow!("Invalid network provided: {}", network_str)),
+    }
+}
+
 pub fn get_market_metadata_from_header_bytes(
     header_bytes: &[u8],
 ) -> anyhow::Result<MarketMetadata> {

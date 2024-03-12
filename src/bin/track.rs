@@ -255,7 +255,7 @@ struct Args {
     output: Option<String>,
 
     /// Optional log file path to mirror stdout.
-    #[clap(short, long, default_value = "./logs/app.log")]
+    #[clap(short, long, default_value = "./logs/track.log")]
     log: String,
 
     /// Optional keypair path. Defaults to Solana CLI config file.

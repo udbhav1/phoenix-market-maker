@@ -9,8 +9,8 @@ name = "example"
 path = "src/bin/example.rs"
 
 [[bin]]
-name = "track"
-path = "src/bin/track.rs"
+name = "trade"
+path = "src/bin/trade.rs"
 
 [dependencies]
 anyhow = "1.0.80"

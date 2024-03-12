@@ -7,7 +7,7 @@ track-devnet BASE QUOTE CSV_NAME LOG_NAME:
 
 # print file sizes of data and logs
 du:
-    @printf "Data:\n" && du -ah data/*.csv | sort -hr | awk '{printf "    %s %s\n", $1, $NF}' | sed 's/data\/\(.*\)/\1/' && printf "\nLogs:\n" && du -ah logs/*.log | sort -hr | awk '{printf "    %s %s\n", $1, $NF}' | sed 's/logs\/\(.*\)/\1/'
+    @printf "Data:\n" && du -sh data/ | awk '{printf "    (%s total)\n", $1}' && du -ah data/*.csv | sort -hr | awk '{printf "    %s %s\n", $1, $NF}' | sed 's/data\/\(.*\)/\1/' && printf "\nLogs:\n" && du -sh logs/ | awk '{printf "    (%s total)\n", $1}' && du -ah logs/*.log | sort -hr | awk '{printf "    %s %s\n", $1, $NF}' | sed 's/logs\/\(.*\)/\1/'
 
 clear-data:
     rm data/*.csv
