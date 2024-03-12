@@ -1,14 +1,17 @@
 extern crate phoenix_market_maker;
-use phoenix_market_maker::utils::{
-    book_to_aggregated_levels, get_book_from_account_data, get_ladder, get_network,
-    get_payer_keypair_from_path, get_time_ms, get_ws_url, symbols_to_market_address, Book,
+use phoenix_market_maker::network_utils::{
+    get_network, get_payer_keypair_from_path, get_time_ms, get_ws_url,
+    AccountSubscribeConfirmation, AccountSubscribeResponse, ACCOUNT_SUBSCRIBE_JSON,
+};
+use phoenix_market_maker::phoenix_utils::{
+    book_to_aggregated_levels, get_book_from_account_data, get_ladder, symbols_to_market_address,
+    Book,
 };
 
 use anyhow::anyhow;
 use clap::Parser;
 use csv::Writer;
 use futures::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
@@ -24,61 +27,6 @@ use url::Url;
 use phoenix_sdk::sdk_client::SDKClient;
 use solana_cli_config::{Config, CONFIG_FILE};
 use solana_sdk::pubkey::Pubkey;
-
-const ACCOUNT_SUBSCRIBE_JSON: &str = r#"{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "accountSubscribe",
-  "params": [
-    "{}",
-    {
-      "encoding": "base64+zstd",
-      "commitment": "confirmed"
-    }
-  ]
-  }"#;
-
-#[derive(Serialize, Deserialize, Debug)]
-struct AccountSubscribeResponse {
-    jsonrpc: String,
-    method: String,
-    params: Params,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Params {
-    result: Result,
-    subscription: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Result {
-    context: Context,
-    value: Value,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Context {
-    slot: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[allow(non_snake_case)]
-struct Value {
-    lamports: u64,
-    data: Vec<String>,
-    owner: String,
-    executable: bool,
-    rentEpoch: u64,
-    space: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct AccountSubscriptionConfirmation {
-    jsonrpc: String,
-    result: u64,
-    id: u64,
-}
 
 fn generate_csv_columns(levels: usize) -> Vec<String> {
     let mut columns = vec!["timestamp".to_string(), "slot".to_string()];
@@ -164,8 +112,7 @@ async fn connect_and_run(
             Ok(msg) => match msg {
                 Message::Text(s) => {
                     if is_first_message {
-                        let confirmation: AccountSubscriptionConfirmation =
-                            serde_json::from_str(&s)?;
+                        let confirmation: AccountSubscribeConfirmation = serde_json::from_str(&s)?;
                         debug!("Subscription confirmed with ID: {}", confirmation.result);
                         is_first_message = false;
                     } else {
@@ -181,7 +128,6 @@ async fn connect_and_run(
 
                         let slot = parsed.params.result.context.slot;
 
-                        // just to
                         let precision: usize = env::var("TRACK_BOOK_PRECISION")?.parse()?;
                         let ladder_str = get_ladder(&orderbook, 5, precision);
                         debug!("Market Ladder:\n{}", ladder_str);
@@ -207,7 +153,7 @@ async fn run(
     mut csv_writer: Option<&mut Writer<File>>,
 ) -> anyhow::Result<()> {
     let url = Url::from_str(ws_url).expect("Failed to parse websocket url");
-    let subscribe_msg = Message::Text(ACCOUNT_SUBSCRIBE_JSON.replace("{}", market_address));
+    let subscribe_msg = Message::Text(ACCOUNT_SUBSCRIBE_JSON.replace("{1}", market_address));
     let sleep_time: u64 = env::var("TRACK_SLEEP_SEC_BETWEEN_WS_CONNECT")?.parse()?;
 
     let max_disconnects: usize = env::var("TRACK_DISCONNECTS_BEFORE_EXIT")?.parse()?;
@@ -271,6 +217,8 @@ pub async fn main() -> anyhow::Result<()> {
     let log_level = env::var("TRACK_LOG_LEVEL")?;
 
     let args = Args::parse();
+
+    info!("Starting track program");
 
     // log to both stdout and file
     let log_file = OpenOptions::new()

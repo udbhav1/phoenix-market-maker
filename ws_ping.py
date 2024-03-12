@@ -1,15 +1,15 @@
 import asyncio
 import time
-import websockets
-from dotenv import load_dotenv
+import websockets  # type: ignore
+from dotenv import load_dotenv  # type: ignore
 import os
 import statistics
 
 load_dotenv()
 
 api_key = os.getenv("HELIUS_API_KEY")
-uri = f"wss://mainnet.helius-rpc.com/?api-key={api_key}"
-# uri = f"wss://atlas-mainnet.helius-rpc.com/?api-key={api_key}"
+# uri = f"wss://mainnet.helius-rpc.com/?api-key={api_key}"
+uri = f"wss://atlas-mainnet.helius-rpc.com/?api-key={api_key}"
 N = 10
 
 

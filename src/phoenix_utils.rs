@@ -5,15 +5,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
 use std::mem::size_of;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use phoenix::program::{dispatch_market::load_with_dispatch, MarketHeader};
+use phoenix::state::enums::Side;
 use phoenix::state::markets::FIFOOrderId;
 use phoenix_sdk::orderbook::{Orderbook, OrderbookKey, OrderbookValue};
 use phoenix_sdk::sdk_client::{MarketMetadata, PhoenixOrder, SDKClient};
-use solana_sdk::signature::{read_keypair_file, Keypair};
 
 pub type Book = Orderbook<FIFOOrderId, PhoenixOrder>;
+
+#[derive(Debug, Clone)]
+pub struct Fill {
+    pub price: u64,
+    pub size: u64,
+    pub slot: u64,
+    pub side: Side,
+}
 
 // phoenix_sdk::sdk_client::JsonMarketConfig with token array
 #[derive(Debug, Serialize, Deserialize)]
@@ -142,51 +149,6 @@ pub async fn parse_market_config(sdk_client: &SDKClient) -> anyhow::Result<Maste
     Ok(master_defs)
 }
 
-pub fn get_payer_keypair_from_path(path: &str) -> anyhow::Result<Keypair> {
-    read_keypair_file(&*shellexpand::tilde(path)).map_err(|e| anyhow!(e.to_string()))
-}
-
-pub fn get_network(network_str: &str, api_key: &str) -> anyhow::Result<String> {
-    match network_str {
-        "devnet" | "dev" | "d" => Ok("https://api.devnet.solana.com".to_owned()),
-        "mainnet" | "main" | "m" | "mainnet-beta" => {
-            Ok("https://api.mainnet-beta.solana.com".to_owned())
-        }
-
-        "helius_mainnet" => Ok(format!(
-            "https://mainnet.helius-rpc.com/?api-key={}",
-            api_key
-        )),
-        "helius_devnet" => Ok(format!(
-            "https://devnet.helius-rpc.com/?api-key={}",
-            api_key
-        )),
-        _ => Err(anyhow!("Invalid network provided: {}", network_str)),
-    }
-}
-
-pub fn get_ws_url(network_str: &str, api_key: &str) -> anyhow::Result<String> {
-    match network_str {
-        "helius_mainnet" => Ok(format!("wss://mainnet.helius-rpc.com/?api-key={}", api_key)),
-        "helius_devnet" => Ok(format!("wss://devnet.helius-rpc.com/?api-key={}", api_key)),
-        _ => Err(anyhow!("Invalid network provided: {}", network_str)),
-    }
-}
-
-pub fn get_enhanced_ws_url(network_str: &str, api_key: &str) -> anyhow::Result<String> {
-    match network_str {
-        "helius_mainnet" => Ok(format!(
-            "wss://atlas-mainnet.helius-rpc.com?api-key={}",
-            api_key
-        )),
-        "helius_devnet" => Ok(format!(
-            "wss://atlas-devnet.helius-rpc.com?api-key={}",
-            api_key
-        )),
-        _ => Err(anyhow!("Invalid network provided: {}", network_str)),
-    }
-}
-
 pub fn get_market_metadata_from_header_bytes(
     header_bytes: &[u8],
 ) -> anyhow::Result<MarketMetadata> {
@@ -293,11 +255,4 @@ pub fn get_ladder(orderbook: &Book, levels: usize, precision: usize) -> String {
     }
 
     out.join("\n")
-}
-
-pub fn get_time_ms() -> anyhow::Result<u64> {
-    let now = SystemTime::now();
-    let since_epoch = now.duration_since(UNIX_EPOCH)?;
-
-    Ok(since_epoch.as_secs() * 1_000 + since_epoch.subsec_millis() as u64)
 }
