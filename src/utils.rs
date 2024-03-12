@@ -75,6 +75,31 @@ impl MasterDefinitions {
     }
 }
 
+pub async fn symbols_to_market_address(
+    sdk: &SDKClient,
+    base_symbol: &str,
+    quote_symbol: &str,
+) -> anyhow::Result<String> {
+    let master_defs = parse_market_config(&sdk).await?;
+
+    let base_symbol = base_symbol;
+    let quote_symbol = quote_symbol;
+    let base_mint = master_defs.get_mint(&base_symbol).ok_or_else(|| {
+        anyhow!(
+            "Failed to find mint for symbol {} in config file",
+            base_symbol
+        )
+    })?;
+    let quote_mint = master_defs.get_mint(&quote_symbol).ok_or_else(|| {
+        anyhow!(
+            "Failed to find mint for symbol {} in config file",
+            quote_symbol
+        )
+    })?;
+
+    master_defs.get_market_address(base_mint, quote_mint)
+}
+
 pub async fn parse_market_config(sdk_client: &SDKClient) -> anyhow::Result<MasterDefinitions> {
     let config_url =
         "https://raw.githubusercontent.com/Ellipsis-Labs/phoenix-sdk/master/master_config.json";

@@ -1,8 +1,7 @@
 extern crate phoenix_market_maker;
 use phoenix_market_maker::utils::{
     book_to_aggregated_levels, get_book_from_account_data, get_ladder, get_network,
-    get_payer_keypair_from_path, get_time_ms, get_ws_url, parse_market_config, Book,
-    MasterDefinitions,
+    get_payer_keypair_from_path, get_time_ms, get_ws_url, symbols_to_market_address, Book,
 };
 
 use anyhow::anyhow;
@@ -209,7 +208,10 @@ async fn run(
 ) -> anyhow::Result<()> {
     let url = Url::from_str(ws_url).expect("Failed to parse websocket url");
     let subscribe_msg = Message::Text(ACCOUNT_SUBSCRIBE_JSON.replace("{}", market_address));
-    let sleep_time: u64 = env::var("SLEEP_SEC_BETWEEN_WS_CONNECT")?.parse()?;
+    let sleep_time: u64 = env::var("TRACK_SLEEP_SEC_BETWEEN_WS_CONNECT")?.parse()?;
+
+    let max_disconnects: usize = env::var("TRACK_DISCONNECTS_BEFORE_EXIT")?.parse()?;
+    let mut disconnects = 0;
 
     loop {
         // i am nowhere near good enough at rust to know if this is the right way to do this
@@ -218,7 +220,17 @@ async fn run(
 
         if let Err(e) = connect_and_run(url.clone(), subscribe_msg.clone(), writer_ref).await {
             info!("Websocket disconnected with error: {:?}", e);
-            info!("Attempting to reconnect after {}s...", sleep_time);
+            disconnects += 1;
+
+            if disconnects >= max_disconnects {
+                error!("Exceeded max disconnects, exiting...");
+                return Err(anyhow!(
+                    "Experienced {} disconnections, not trying again",
+                    max_disconnects
+                ));
+            }
+
+            info!("Reconnect attempt #{}...", disconnects + 1);
             sleep(Duration::from_secs(sleep_time)).await;
         }
     }
@@ -256,7 +268,7 @@ pub async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv()?;
 
     let api_key = env::var("HELIUS_API_KEY")?;
-    let log_level = env::var("LOG_LEVEL")?;
+    let log_level = env::var("TRACK_LOG_LEVEL")?;
 
     let args = Args::parse();
 
@@ -290,25 +302,10 @@ pub async fn main() -> anyhow::Result<()> {
 
     let mut sdk = SDKClient::new(&trader, network_url).await?;
 
-    let master_defs: MasterDefinitions = parse_market_config(&sdk).await?;
-
     let base_symbol = args.base_symbol;
     let quote_symbol = args.quote_symbol;
-    let base_mint = master_defs.get_mint(&base_symbol).ok_or_else(|| {
-        anyhow!(
-            "Failed to find mint for symbol {} in config file",
-            base_symbol
-        )
-    })?;
-    let quote_mint = master_defs.get_mint(&quote_symbol).ok_or_else(|| {
-        anyhow!(
-            "Failed to find mint for symbol {} in config file",
-            quote_symbol
-        )
-    })?;
 
-    // find the entry in markets that matches the base
-    let market_address = master_defs.get_market_address(base_mint, quote_mint)?;
+    let market_address = symbols_to_market_address(&sdk, &base_symbol, &quote_symbol).await?;
     let market_pubkey = Pubkey::from_str(&market_address)?;
 
     info!(

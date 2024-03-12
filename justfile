@@ -1,9 +1,9 @@
 # track BASE/QUOTE pair, dumping books to CSV_NAME and logs to LOG_NAME
 track-mainnet BASE QUOTE CSV_NAME LOG_NAME:
-    cargo run --release --bin track -- --url helius_mainnet -b {{BASE}} -q {{QUOTE}} -o data/{{CSV_NAME}}.csv -l logs/{{LOG_NAME}}.log
+    RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin track -- --url helius_mainnet -b {{BASE}} -q {{QUOTE}} -o data/{{CSV_NAME}}.csv -l logs/{{LOG_NAME}}.log
 
 track-devnet BASE QUOTE CSV_NAME LOG_NAME:
-    cargo run --release --bin track -- --url helius_devnet -b {{BASE}} -q {{QUOTE}} -o data/{{CSV_NAME}}-devnet.csv -l logs/{{LOG_NAME}}-devnet.log
+    RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin track -- --url helius_devnet -b {{BASE}} -q {{QUOTE}} -o data/{{CSV_NAME}}-devnet.csv -l logs/{{LOG_NAME}}-devnet.log
 
 # print file sizes of data and logs
 du:
