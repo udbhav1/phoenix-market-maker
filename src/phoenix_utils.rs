@@ -18,8 +18,10 @@ pub type Book = Orderbook<FIFOOrderId, PhoenixOrder>;
 pub struct Fill {
     pub price: u64,
     pub size: u64,
-    pub slot: u64,
     pub side: Side,
+    pub slot: u64,
+    pub timestamp: i64,
+    pub signature: String,
 }
 
 // phoenix_sdk::sdk_client::JsonMarketConfig with token array

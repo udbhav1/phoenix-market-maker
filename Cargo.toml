@@ -12,6 +12,9 @@ path = "src/bin/example.rs"
 name = "trade"
 path = "src/bin/trade.rs"
 
+[lints.rust]
+unused_assignments = "allow"
+
 [dependencies]
 anyhow = "1.0.80"
 base64 = "0.22.0"

@@ -26,11 +26,11 @@ pub const TRANSACTION_SUBSCRIBE_JSON: &str = r#"
         {
             "vote": false,
             "failed": false,
-            "accountRequired": ["{1}"]
+            "accountRequired": ["{1}", "{2}"]
         },
         {
             "commitment": "confirmed",
-            "encoding": "jsonParsed",
+            "encoding": "base64",
             "transaction_details": "full",
             "showRewards": false,
             "maxSupportedTransactionVersion": 0
@@ -90,6 +90,21 @@ pub struct TransactionSubscribeConfirmation {
     pub jsonrpc: String,
     pub result: i64,
     pub id: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransactionSubscribeResponse {
+    pub params: TransactionSubscribeParams,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransactionSubscribeParams {
+    pub result: TransactionSubscribeParamsResult,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransactionSubscribeParamsResult {
+    pub signature: String,
 }
 
 pub fn get_payer_keypair_from_path(path: &str) -> anyhow::Result<Keypair> {

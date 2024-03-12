@@ -4,33 +4,82 @@ use phoenix_market_maker::network_utils::get_time_ms;
 use phoenix_market_maker::network_utils::{
     get_enhanced_ws_url, get_network, get_payer_keypair_from_path, get_ws_url,
     AccountSubscribeConfirmation, AccountSubscribeResponse, ConnectionStatus,
-    TransactionSubscribeConfirmation, ACCOUNT_SUBSCRIBE_JSON, TRANSACTION_SUBSCRIBE_JSON,
+    TransactionSubscribeConfirmation, TransactionSubscribeResponse, ACCOUNT_SUBSCRIBE_JSON,
+    TRANSACTION_SUBSCRIBE_JSON,
 };
 use phoenix_market_maker::phoenix_utils::{
     book_to_aggregated_levels, get_book_from_account_data, symbols_to_market_address, Book, Fill,
 };
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
+use solana_sdk::signature::Signature;
 use std::env;
 use std::fs::OpenOptions;
-use std::net::TcpStream;
 use std::str::FromStr;
+use std::time::Instant;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
 
+use phoenix::state::enums::Side;
+use phoenix_sdk::sdk_client::MarketEventDetails;
 use phoenix_sdk::sdk_client::SDKClient;
 use solana_cli_config::{Config, CONFIG_FILE};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
+
+async fn handle_orderbook_stream(
+    url: Url,
+    subscribe_msg: Message,
+    tx: Sender<Book>,
+    status_tx: Sender<ConnectionStatus>,
+) -> anyhow::Result<()> {
+    let (ws_stream, _) = connect_async(url).await?;
+    info!("Connected to orderbook websocket");
+    status_tx.send(ConnectionStatus::Connected).await?;
+
+    let (mut write, read) = ws_stream.split();
+    let mut fused_read = read.fuse();
+    write.send(subscribe_msg.clone()).await?;
+
+    let mut is_first_message = true;
+    while let Some(message) = fused_read.next().await {
+        match message {
+            Ok(msg) => match msg {
+                Message::Text(s) => {
+                    if is_first_message {
+                        let confirmation: AccountSubscribeConfirmation = serde_json::from_str(&s)
+                            .with_context(|| {
+                            format!(
+                                "Failed to deserialize account subscribe confirmation: {}",
+                                s
+                            )
+                        })?;
+                        debug!("Subscription confirmed with ID: {}", confirmation.result);
+                        is_first_message = false;
+                    } else {
+                        let parsed: AccountSubscribeResponse = serde_json::from_str(&s)?;
+
+                        let orderbook =
+                            get_book_from_account_data(parsed.params.result.value.data)?;
+                        tx.send(orderbook).await?;
+                    }
+                }
+                _ => {}
+            },
+            Err(e) => return Err(anyhow!(e)),
+        }
+    }
+
+    Ok(())
+}
 
 async fn orderbook_stream(
     tx: Sender<Book>,
@@ -46,66 +95,97 @@ async fn orderbook_stream(
     let mut disconnects = 0;
 
     loop {
-        let mut is_first_message = true;
+        if let Err(e) = handle_orderbook_stream(
+            url.clone(),
+            subscribe_msg.clone(),
+            tx.clone(),
+            status_tx.clone(),
+        )
+        .await
+        {
+            status_tx.send(ConnectionStatus::Disconnected).await?;
 
-        match connect_async(url.clone()).await {
-            Ok((ws_stream, _)) => {
-                info!("Connected to orderbook websocket");
-                status_tx.send(ConnectionStatus::Connected).await?;
-
-                let (mut write, read) = ws_stream.split();
-                let mut fused_read = read.fuse();
-                write.send(subscribe_msg.clone()).await?;
-
-                while let Some(message) = fused_read.next().await {
-                    match message {
-                        Ok(msg) => match msg {
-                            Message::Text(s) => {
-                                if is_first_message {
-                                    let confirmation: AccountSubscribeConfirmation =
-                                        serde_json::from_str(&s)?;
-                                    debug!(
-                                        "Subscription confirmed with ID: {}",
-                                        confirmation.result
-                                    );
-                                    is_first_message = false;
-                                } else {
-                                    let parsed: AccountSubscribeResponse =
-                                        serde_json::from_str(&s)?;
-
-                                    let orderbook = get_book_from_account_data(
-                                        parsed.params.result.value.data,
-                                    )?;
-                                    tx.send(orderbook).await?;
-                                }
-                            }
-                            _ => {}
-                        },
-                        Err(e) => {
-                            warn!("Orderbook websocket received error message: {:?}", e);
-                        }
-                    }
-                }
+            warn!("Orderbook websocket disconnected with error: {:?}", e);
+            disconnects += 1;
+            if disconnects >= max_disconnects {
+                error!("Exceeded max disconnects, exiting...");
+                return Err(anyhow!(
+                    "Orderbook websocket experienced {} disconnections, not trying again",
+                    max_disconnects
+                ));
             }
-            Err(e) => {
-                status_tx.send(ConnectionStatus::Disconnected).await?;
 
-                info!("Orderbook websocket disconnected with error: {:?}", e);
-                disconnects += 1;
-
-                if disconnects >= max_disconnects {
-                    error!("Exceeded max disconnects, exiting...");
-                    return Err(anyhow!(
-                        "Experienced {} disconnections, not trying again",
-                        max_disconnects
-                    ));
-                }
-
-                info!("Reconnect attempt #{}...", disconnects + 1);
-                sleep(Duration::from_secs(sleep_time)).await;
-            }
+            info!("Reconnect attempt #{}...", disconnects + 1);
+            sleep(Duration::from_secs(sleep_time)).await;
         }
     }
+}
+
+async fn handle_fill_stream(
+    url: Url,
+    subscribe_msg: Message,
+    tx: Sender<Fill>,
+    status_tx: Sender<ConnectionStatus>,
+    sdk: &SDKClient,
+) -> anyhow::Result<()> {
+    let (ws_stream, _) = connect_async(url).await?;
+    info!("Connected to fill websocket");
+    status_tx.send(ConnectionStatus::Connected).await?;
+
+    let (mut write, read) = ws_stream.split();
+    let mut fused_read = read.fuse();
+    write.send(subscribe_msg.clone()).await?;
+
+    let mut is_first_message = true;
+    while let Some(message) = fused_read.next().await {
+        match message {
+            Ok(msg) => {
+                match msg {
+                    Message::Text(s) => {
+                        if is_first_message {
+                            let confirmation: TransactionSubscribeConfirmation =
+                        serde_json::from_str(&s).with_context(|| format!("Failed to deserialize transaction subscribe confirmation: {}", s))?;
+                            debug!("Subscription confirmed with ID: {}", confirmation.result);
+                            is_first_message = false;
+                        } else {
+                            let parsed: TransactionSubscribeResponse = serde_json::from_str(&s)?;
+                            let signature_str = parsed.params.result.signature;
+
+                            let start = Instant::now();
+                            let events =
+                                sdk.parse_fills(&Signature::from_str(&signature_str)?).await;
+                            let elapsed = start.elapsed();
+                            info!(
+                                "phoenix_sdk::sdk_client::parse_fills took {}ms",
+                                elapsed.as_millis()
+                            );
+
+                            for event in events {
+                                match event.details {
+                                    MarketEventDetails::Fill(f) => {
+                                        let fill = Fill {
+                                            price: f.price_in_ticks,
+                                            size: f.base_lots_filled,
+                                            side: f.side_filled,
+                                            slot: event.slot,
+                                            timestamp: event.timestamp,
+                                            signature: signature_str.clone(),
+                                        };
+                                        tx.send(fill).await?;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Err(e) => return Err(anyhow!(e)),
+        }
+    }
+
+    Ok(())
 }
 
 async fn fill_stream(
@@ -114,10 +194,13 @@ async fn fill_stream(
     ws_url: &str,
     market_address: &str,
     trader_address: &str,
+    sdk: &SDKClient,
 ) -> anyhow::Result<()> {
     let url = Url::from_str(ws_url).expect("Failed to parse websocket url");
     let subscribe_msg = Message::Text(
-        TRANSACTION_SUBSCRIBE_JSON.replace("{1}", market_address), // .replace("{2}", trader_address),
+        TRANSACTION_SUBSCRIBE_JSON
+            .replace("{1}", market_address)
+            .replace("{2}", trader_address),
     );
     let sleep_time: u64 = env::var("TRADE_SLEEP_SEC_BETWEEN_WS_CONNECT")?.parse()?;
 
@@ -125,58 +208,29 @@ async fn fill_stream(
     let mut disconnects = 0;
 
     loop {
-        let mut is_first_message = true;
+        if let Err(e) = handle_fill_stream(
+            url.clone(),
+            subscribe_msg.clone(),
+            tx.clone(),
+            status_tx.clone(),
+            &sdk,
+        )
+        .await
+        {
+            status_tx.send(ConnectionStatus::Disconnected).await?;
 
-        match connect_async(url.clone()).await {
-            Ok((ws_stream, _)) => {
-                info!("Connected to fill websocket");
-                status_tx.send(ConnectionStatus::Connected).await?;
-
-                let (mut write, read) = ws_stream.split();
-                let mut fused_read = read.fuse();
-                write.send(subscribe_msg.clone()).await?;
-
-                while let Some(message) = fused_read.next().await {
-                    match message {
-                        Ok(msg) => match msg {
-                            Message::Text(s) => {
-                                if is_first_message {
-                                    let confirmation: AccountSubscribeConfirmation =
-                                        serde_json::from_str(&s)?;
-                                    debug!(
-                                        "Subscription confirmed with ID: {}",
-                                        confirmation.result
-                                    );
-                                    is_first_message = false;
-                                } else {
-                                    info!("{}", s);
-                                }
-                            }
-                            _ => {}
-                        },
-                        Err(e) => {
-                            warn!("Fill websocket received error message: {:?}", e);
-                        }
-                    }
-                }
+            warn!("Fill websocket disconnected with error: {:?}", e);
+            disconnects += 1;
+            if disconnects >= max_disconnects {
+                error!("Exceeded max disconnects, exiting...");
+                return Err(anyhow!(
+                    "Fill websocket experienced {} disconnections, not trying again",
+                    max_disconnects
+                ));
             }
-            Err(e) => {
-                status_tx.send(ConnectionStatus::Disconnected).await?;
 
-                info!("Fill websocket disconnected with error: {:?}", e);
-                disconnects += 1;
-
-                if disconnects >= max_disconnects {
-                    error!("Exceeded max disconnects, exiting...");
-                    return Err(anyhow!(
-                        "Experienced {} disconnections, not trying again",
-                        max_disconnects
-                    ));
-                }
-
-                info!("Reconnect attempt #{}...", disconnects + 1);
-                sleep(Duration::from_secs(sleep_time)).await;
-            }
+            info!("Reconnect attempt #{}...", disconnects + 1);
+            sleep(Duration::from_secs(sleep_time)).await;
         }
     }
 }
@@ -205,11 +259,11 @@ async fn trading_logic(
                 // this might be necessary since the trading logic will run on every iteration of the loop
                 // and each loop iteration processes one element from a random queue
                 // then again maybe i wont ever get books fast enough to have more than one in the queue
-
-                // latest_orderbook = Some(orderbook);
-                // while let Ok(newer_orderbook) = orderbook_rx.try_recv() {
-                //     latest_orderbook = Some(newer_orderbook);
-                // }
+                latest_orderbook = Some(orderbook);
+                while let Ok(newer_orderbook) = orderbook_rx.try_recv() {
+                    info!("Newer orderbook in queue, discarding old one");
+                    latest_orderbook = Some(newer_orderbook);
+                }
             },
             Some(fill) = fill_rx.recv() => {
                 info!("Received fill: {:?}", fill);
@@ -223,7 +277,6 @@ async fn trading_logic(
         }
 
         if orderbook_connected && fill_connected {
-            // Trading logic goes here
         } else {
             // One or both streams are disconnected; pause trading logic
             if !orderbook_connected {
@@ -299,12 +352,14 @@ pub async fn main() -> anyhow::Result<()> {
     let provided_network = args.url.clone().unwrap_or(config.json_rpc_url);
     let network_url = &get_network(&provided_network, &api_key)?.to_string();
 
-    let mut sdk = SDKClient::new(&trader, network_url).await?;
+    // both trading_logic() and fill_stream() need this and its not cloneable
+    let mut sdk1 = SDKClient::new(&trader, network_url).await?;
+    let mut sdk2 = SDKClient::new(&trader, network_url).await?;
 
     let base_symbol = args.base_symbol;
     let quote_symbol = args.quote_symbol;
 
-    let market_address = symbols_to_market_address(&sdk, &base_symbol, &quote_symbol).await?;
+    let market_address = symbols_to_market_address(&sdk1, &base_symbol, &quote_symbol).await?;
     let market_pubkey = Pubkey::from_str(&market_address)?;
 
     info!(
@@ -312,7 +367,8 @@ pub async fn main() -> anyhow::Result<()> {
         base_symbol, quote_symbol, market_address
     );
 
-    sdk.add_market(&market_pubkey).await?;
+    sdk1.add_market(&market_pubkey).await?;
+    sdk2.add_market(&market_pubkey).await?;
 
     let ws_url = get_ws_url(&provided_network, &api_key)?;
     let enhanced_ws_url = get_enhanced_ws_url(&provided_network, &api_key)?;
@@ -345,6 +401,7 @@ pub async fn main() -> anyhow::Result<()> {
             &enhanced_ws_url,
             &market_address2,
             &trader_address,
+            &sdk2,
         )
         .await
         .unwrap();
@@ -355,7 +412,7 @@ pub async fn main() -> anyhow::Result<()> {
         fill_rx,
         orderbook_status_rx,
         fill_status_rx,
-        &sdk,
+        &sdk1,
     )
     .await;
 

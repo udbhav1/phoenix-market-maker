@@ -138,9 +138,7 @@ async fn connect_and_run(
                 }
                 _ => {}
             },
-            Err(e) => {
-                warn!("Websocket received error message: {:?}", e);
-            }
+            Err(e) => return Err(anyhow!(e)),
         }
     }
 
@@ -165,7 +163,7 @@ async fn run(
         let writer_ref = csv_writer.as_mut().map(|w| &mut **w);
 
         if let Err(e) = connect_and_run(url.clone(), subscribe_msg.clone(), writer_ref).await {
-            info!("Websocket disconnected with error: {:?}", e);
+            warn!("Websocket disconnected with error: {:?}", e);
             disconnects += 1;
 
             if disconnects >= max_disconnects {
