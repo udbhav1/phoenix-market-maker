@@ -8,7 +8,8 @@ use phoenix_market_maker::network_utils::{
     TRANSACTION_SUBSCRIBE_JSON,
 };
 use phoenix_market_maker::phoenix_utils::{
-    book_to_aggregated_levels, get_book_from_account_data, symbols_to_market_address, Book, Fill,
+    book_to_aggregated_levels, get_book_from_account_data, send_trade, setup_maker,
+    symbols_to_market_address, Book, Fill,
 };
 
 use anyhow::{anyhow, Context};
@@ -28,12 +29,11 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
 
-use phoenix::state::enums::Side;
 use phoenix_sdk::sdk_client::MarketEventDetails;
 use phoenix_sdk::sdk_client::SDKClient;
 use solana_cli_config::{Config, CONFIG_FILE};
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signer::Signer;
+use solana_client::rpc_client::RpcClient;
+use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signer::Signer};
 
 async fn handle_orderbook_stream(
     url: Url,
@@ -139,48 +139,50 @@ async fn handle_fill_stream(
     let mut is_first_message = true;
     while let Some(message) = fused_read.next().await {
         match message {
-            Ok(msg) => {
-                match msg {
-                    Message::Text(s) => {
-                        if is_first_message {
-                            let confirmation: TransactionSubscribeConfirmation =
-                        serde_json::from_str(&s).with_context(|| format!("Failed to deserialize transaction subscribe confirmation: {}", s))?;
-                            debug!("Subscription confirmed with ID: {}", confirmation.result);
-                            is_first_message = false;
-                        } else {
-                            let parsed: TransactionSubscribeResponse = serde_json::from_str(&s)?;
-                            let signature_str = parsed.params.result.signature;
+            Ok(msg) => match msg {
+                Message::Text(s) => {
+                    if is_first_message {
+                        let confirmation: TransactionSubscribeConfirmation =
+                            serde_json::from_str(&s).with_context(|| {
+                                format!(
+                                    "Failed to deserialize transaction subscribe confirmation: {}",
+                                    s
+                                )
+                            })?;
+                        debug!("Subscription confirmed with ID: {}", confirmation.result);
+                        is_first_message = false;
+                    } else {
+                        let parsed: TransactionSubscribeResponse = serde_json::from_str(&s)?;
+                        let signature_str = parsed.params.result.signature;
 
-                            let start = Instant::now();
-                            let events =
-                                sdk.parse_fills(&Signature::from_str(&signature_str)?).await;
-                            let elapsed = start.elapsed();
-                            info!(
-                                "phoenix_sdk::sdk_client::parse_fills took {}ms",
-                                elapsed.as_millis()
-                            );
+                        let start = Instant::now();
+                        let events = sdk.parse_fills(&Signature::from_str(&signature_str)?).await;
+                        let elapsed = start.elapsed();
+                        info!(
+                            "phoenix_sdk::sdk_client::parse_fills took {}ms",
+                            elapsed.as_millis()
+                        );
 
-                            for event in events {
-                                match event.details {
-                                    MarketEventDetails::Fill(f) => {
-                                        let fill = Fill {
-                                            price: f.price_in_ticks,
-                                            size: f.base_lots_filled,
-                                            side: f.side_filled,
-                                            slot: event.slot,
-                                            timestamp: event.timestamp,
-                                            signature: signature_str.clone(),
-                                        };
-                                        tx.send(fill).await?;
-                                    }
-                                    _ => {}
+                        for event in events {
+                            match event.details {
+                                MarketEventDetails::Fill(f) => {
+                                    let fill = Fill {
+                                        price: f.price_in_ticks,
+                                        size: f.base_lots_filled,
+                                        side: f.side_filled,
+                                        slot: event.slot,
+                                        timestamp: event.timestamp,
+                                        signature: signature_str.clone(),
+                                    };
+                                    tx.send(fill).await?;
                                 }
+                                _ => {}
                             }
                         }
                     }
-                    _ => {}
                 }
-            }
+                _ => {}
+            },
             Err(e) => return Err(anyhow!(e)),
         }
     }
@@ -255,6 +257,7 @@ async fn trading_logic(
                 info!("Received orderbook #{}", i);
                 // orderbook.print_ladder(5, 4);
 
+
                 // clear queue to get latest book every time we hit this branch
                 // this might be necessary since the trading logic will run on every iteration of the loop
                 // and each loop iteration processes one element from a random queue
@@ -277,6 +280,11 @@ async fn trading_logic(
         }
 
         if orderbook_connected && fill_connected {
+            if let Some(book) = &latest_orderbook {
+                let (bids, asks) = book_to_aggregated_levels(&book, 4);
+                info!("bids: {:?}", bids);
+                info!("asks: {:?}", asks);
+            }
         } else {
             // One or both streams are disconnected; pause trading logic
             if !orderbook_connected {
@@ -293,7 +301,7 @@ async fn trading_logic(
 struct Args {
     /// RPC endpoint: devnet, mainnet, helius_devnet, helius_mainnet, etc.
     #[clap(short, long)]
-    url: Option<String>,
+    url: String,
 
     /// Case insensitive: sol, bonk, jto, jup, etc.
     #[clap(short, long)]
@@ -349,12 +357,20 @@ pub async fn main() -> anyhow::Result<()> {
     };
     let trader = get_payer_keypair_from_path(&args.keypair_path.unwrap_or(config.keypair_path))?;
     let trader_address: String = trader.pubkey().to_string();
-    let provided_network = args.url.clone().unwrap_or(config.json_rpc_url);
-    let network_url = &get_network(&provided_network, &api_key)?.to_string();
+    let provided_network = args.url.clone();
+    let network_url = get_network(&provided_network, &api_key)?.to_string();
+
+    info!("Current trader address: {}", trader_address);
+
+    let rpc_client = RpcClient::new_with_timeout_and_commitment(
+        network_url.clone(),
+        Duration::from_secs(30),
+        CommitmentConfig::confirmed(),
+    );
 
     // both trading_logic() and fill_stream() need this and its not cloneable
-    let mut sdk1 = SDKClient::new(&trader, network_url).await?;
-    let mut sdk2 = SDKClient::new(&trader, network_url).await?;
+    let mut sdk1 = SDKClient::new(&trader, &network_url).await?;
+    let mut sdk2 = SDKClient::new(&trader, &network_url).await?;
 
     let base_symbol = args.base_symbol;
     let quote_symbol = args.quote_symbol;
@@ -363,12 +379,31 @@ pub async fn main() -> anyhow::Result<()> {
     let market_pubkey = Pubkey::from_str(&market_address)?;
 
     info!(
-        "Found market address for {}/{}: {}",
+        "Trading on {}/{} at address: {}",
         base_symbol, quote_symbol, market_address
     );
 
     sdk1.add_market(&market_pubkey).await?;
     sdk2.add_market(&market_pubkey).await?;
+
+    info!(
+        "Base units per lot: {}",
+        sdk1.raw_base_units_per_base_lot(&market_pubkey)?,
+    );
+
+    match setup_maker(&sdk1, &rpc_client, &trader, &market_pubkey).await? {
+        Some(sig) => {
+            info!("Setup tx signature: {:?}", sig);
+        }
+        None => {
+            info!("No setup tx required");
+        }
+    }
+
+    let start = Instant::now();
+    rpc_client.get_latest_blockhash()?;
+    let end = Instant::now();
+    info!("Time to get blockhash: {:?}", end.duration_since(start));
 
     let ws_url = get_ws_url(&provided_network, &api_key)?;
     let enhanced_ws_url = get_enhanced_ws_url(&provided_network, &api_key)?;

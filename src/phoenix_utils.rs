@@ -3,14 +3,23 @@ use base64::prelude::*;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use std::io::Read;
 use std::mem::size_of;
+#[allow(unused_imports)]
+use tracing::{debug, error, info, trace, warn};
 
 use phoenix::program::{dispatch_market::load_with_dispatch, MarketHeader};
 use phoenix::state::enums::Side;
 use phoenix::state::markets::FIFOOrderId;
 use phoenix_sdk::orderbook::{Orderbook, OrderbookKey, OrderbookValue};
 use phoenix_sdk::sdk_client::{MarketMetadata, PhoenixOrder, SDKClient};
+use solana_client::rpc_client::RpcClient;
+use solana_client::rpc_config::RpcSendTransactionConfig;
+use solana_sdk::{
+    compute_budget::ComputeBudgetInstruction, instruction::Instruction, pubkey::Pubkey,
+    signature::Keypair, signature::Signature, signer::Signer, transaction::Transaction,
+};
 
 pub type Book = Orderbook<FIFOOrderId, PhoenixOrder>;
 
@@ -257,4 +266,65 @@ pub fn get_ladder(orderbook: &Book, levels: usize, precision: usize) -> String {
     }
 
     out.join("\n")
+}
+
+pub async fn setup_maker(
+    sdk: &SDKClient,
+    rpc_client: &RpcClient,
+    trader_keypair: &Keypair,
+    market_pubkey: &Pubkey,
+) -> anyhow::Result<Option<Signature>> {
+    let setup_ixs = sdk
+        .get_maker_setup_instructions_for_market(market_pubkey)
+        .await?;
+    debug!("Setup ixs: {:?}", setup_ixs);
+
+    if !setup_ixs.is_empty() {
+        info!("Sending setup tx");
+        return Ok(Some(rpc_client.send_and_confirm_transaction(
+            &Transaction::new_signed_with_payer(
+                &setup_ixs,
+                Some(&trader_keypair.pubkey()),
+                &[trader_keypair],
+                rpc_client.get_latest_blockhash().unwrap(),
+            ),
+        )?));
+    } else {
+        return Ok(None);
+    }
+}
+
+pub fn send_trade(
+    rpc_client: &RpcClient,
+    trader_keypair: &Keypair,
+    mut ixs: Vec<Instruction>,
+) -> anyhow::Result<Signature> {
+    let compute_budget = env::var("TRADE_COMPUTE_UNIT_LIMIT")?.parse()?;
+    let compute_price = env::var("TRADE_COMPUTE_UNIT_PRICE")?.parse()?;
+
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_budget);
+    let compute_price_ix = ComputeBudgetInstruction::set_compute_unit_price(compute_price);
+
+    ixs.insert(0, compute_price_ix);
+    ixs.insert(0, compute_budget_ix);
+
+    let blockhash = rpc_client.get_latest_blockhash()?;
+
+    let signature = rpc_client.send_transaction_with_config(
+        &Transaction::new_signed_with_payer(
+            &ixs,
+            Some(&trader_keypair.pubkey()),
+            &[trader_keypair],
+            blockhash,
+        ),
+        RpcSendTransactionConfig {
+            skip_preflight: true,
+            preflight_commitment: Some(solana_sdk::commitment_config::CommitmentLevel::Confirmed),
+            encoding: None,
+            max_retries: Some(0),
+            min_context_slot: None,
+        },
+    )?;
+
+    Ok(signature)
 }

@@ -5,8 +5,8 @@ track-mainnet BASE QUOTE CSV_NAME LOG_NAME:
 track-devnet BASE QUOTE CSV_NAME LOG_NAME:
     RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin track -- --url helius_devnet -b {{BASE}} -q {{QUOTE}} -o data/{{CSV_NAME}}-devnet.csv -l logs/{{LOG_NAME}}-devnet.log
 
-trade-mainnet BASE QUOTE:
-    RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin trade -- --url helius_mainnet -b {{BASE}} -q {{QUOTE}}
+trade-mainnet BASE QUOTE LOG_NAME KEYPAIR:
+    RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin trade -- --url helius_mainnet -b {{BASE}} -q {{QUOTE}} -l logs/{{LOG_NAME}}.log -k {{KEYPAIR}}
 
 # print file sizes of data and logs
 du:
@@ -17,3 +17,10 @@ clear-data:
 
 clear-logs:
     rm logs/*.log
+
+watch MARKET TRADER:
+    watch -n1 "phoenix-cli get-open-orders {{MARKET}} -t {{TRADER}} --url main"
+
+balance KEYPAIR:
+    @spl-token accounts --url m --owner {{KEYPAIR}} | tail -n +3
+    @solana balance --url m --keypair {{KEYPAIR}}
