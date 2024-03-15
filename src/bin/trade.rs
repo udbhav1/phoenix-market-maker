@@ -264,11 +264,14 @@ async fn trading_logic(
     );
     let base_size: f64 = env::var("TRADE_BASE_SIZE")?.parse()?;
     let dump_threshold: f64 = env::var("TRADE_DUMP_THRESHOLD")?.parse()?;
+    let dump_interval: usize = env::var("TRADE_DUMP_SPAM_INTERVAL")?.parse()?;
 
     let mut i = 0;
     let mut latest_orderbook: Option<Book> = None;
 
     let mut base_balance: i32 = 0;
+    let mut should_dump = false;
+    let mut dump_counter: usize = 0;
 
     loop {
         tokio::select! {
@@ -291,11 +294,21 @@ async fn trading_logic(
                 }
             },
             Some(fill) = fill_rx.recv() => {
-                let side = match fill.side {
+                let mut my_side = fill.side;
+                if fill.maker != trader_keypair.pubkey().to_string() {
+                    my_side = my_side.opposite();
+                }
+                let side = match my_side {
                     Side::Bid => { base_balance += fill.size as i32;  "Bought" },
                     Side::Ask => { base_balance -= fill.size as i32; "Sold" },
                 };
-                warn!("{} {} lots at price {}, JUP balance: {}", side, fill.size, (fill.price as f64) / 10000.0, (base_balance as f64) / 100.0);
+                if base_balance.abs() as f64 / 100.0 >= dump_threshold {
+                    should_dump = true;
+                } else {
+                    should_dump = false;
+                    dump_counter = 0;
+                }
+                warn!("{} {} lots at price {}, Inventory: {}", side, fill.size, (fill.price as f64) / 10000.0, (base_balance as f64) / 100.0);
             },
             Some(status) = orderbook_status_rx.recv() => {
                 orderbook_connected = matches!(status, ConnectionStatus::Connected);
@@ -306,36 +319,44 @@ async fn trading_logic(
         }
 
         if orderbook_connected && fill_connected {
-            if (base_balance.abs() as f64) / 100.0 >= dump_threshold {
-                let side = if base_balance > 0 {
-                    Side::Ask
-                } else {
-                    Side::Bid
-                };
-                let dump_ix = sdk.get_fok_generic_ix(
-                    &market_pubkey,
-                    0,
-                    side,
-                    base_balance.abs() as u64,
-                    Some(SelfTradeBehavior::Abort),
-                    None,
-                    Some(110110110),
-                    Some(true),
-                )?;
+            if should_dump {
+                if dump_counter % dump_interval == 0 {
+                    let side = if base_balance > 0 {
+                        Side::Ask
+                    } else {
+                        Side::Bid
+                    };
+                    let price_limit = if side == Side::Ask {
+                        0
+                    } else {
+                        100000000000000
+                    };
+                    let dump_ix = sdk.get_fok_generic_ix(
+                        &market_pubkey,
+                        price_limit,
+                        side,
+                        base_balance.abs() as u64,
+                        Some(SelfTradeBehavior::Abort),
+                        None,
+                        Some(110110110),
+                        None,
+                    )?;
 
-                let verb = if side == Side::Ask {
-                    "Selling"
-                } else {
-                    "Buying"
-                };
-                warn!(
-                    "{} {} JUP with fill-or-kill to get flat",
-                    verb,
-                    (base_balance.abs() as f64) / 100.0
-                );
+                    let verb = if side == Side::Ask {
+                        "Selling"
+                    } else {
+                        "Buying"
+                    };
+                    warn!(
+                        "{} {} tokens with fill-or-kill to get flat",
+                        verb,
+                        (base_balance.abs() as f64) / 100.0
+                    );
 
-                let signature = send_trade(&rpc_client, &trader_keypair, vec![dump_ix])?;
-                debug!("Dump Signature: {}", signature);
+                    let signature = send_trade(&rpc_client, &trader_keypair, vec![dump_ix])?;
+                    debug!("Dump Signature: {}", signature);
+                }
+                dump_counter += 1;
             }
             if let Some(book) = &latest_orderbook {
                 let (bids, asks) = book_to_aggregated_levels(&book, 3);
@@ -468,7 +489,7 @@ pub async fn main() -> anyhow::Result<()> {
 
     let rpc_client = RpcClient::new_with_timeout_and_commitment(
         network_url.clone(),
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         CommitmentConfig::confirmed(),
     );
 

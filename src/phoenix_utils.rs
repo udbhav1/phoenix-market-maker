@@ -17,6 +17,7 @@ use phoenix_sdk::orderbook::{Orderbook, OrderbookKey, OrderbookValue};
 use phoenix_sdk::sdk_client::{MarketMetadata, PhoenixOrder, SDKClient};
 use solana_client::rpc_client::RpcClient;
 use solana_client::rpc_config::RpcSendTransactionConfig;
+use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::{
     compute_budget::ComputeBudgetInstruction, instruction::Instruction, pubkey::Pubkey,
     signature::Keypair, signature::Signature, signer::Signer, transaction::Transaction,
@@ -279,16 +280,28 @@ pub async fn setup_maker(
     let setup_ixs = sdk
         .get_maker_setup_instructions_for_market(market_pubkey)
         .await?;
-    debug!("Setup ixs: {:?}", setup_ixs);
 
+    // let compute_price = env::var("TRADE_COMPUTE_UNIT_PRICE")?.parse()?;
+    // let compute_price_ix = ComputeBudgetInstruction::set_compute_unit_price(compute_price);
+    // setup_ixs.insert(0, compute_price_ix);
+
+    debug!("Setup ixs: {:?}", setup_ixs);
     if !setup_ixs.is_empty() {
+        info!("Finding valid blockhash");
+        let mut blockhash;
+        loop {
+            blockhash = rpc_client.get_latest_blockhash()?;
+            if rpc_client.is_blockhash_valid(&blockhash, CommitmentConfig::confirmed())? {
+                break;
+            }
+        }
         info!("Sending setup tx");
         return Ok(Some(rpc_client.send_and_confirm_transaction(
             &Transaction::new_signed_with_payer(
                 &setup_ixs,
                 Some(&trader_keypair.pubkey()),
                 &[trader_keypair],
-                rpc_client.get_latest_blockhash().unwrap(),
+                blockhash,
             ),
         )?));
     } else {
@@ -310,8 +323,13 @@ pub fn send_trade(
     ixs.insert(0, compute_price_ix);
     ixs.insert(0, compute_budget_ix);
 
-    let blockhash = rpc_client.get_latest_blockhash()?;
-
+    let mut blockhash;
+    loop {
+        blockhash = rpc_client.get_latest_blockhash()?;
+        if rpc_client.is_blockhash_valid(&blockhash, CommitmentConfig::confirmed())? {
+            break;
+        }
+    }
     let start = Instant::now();
     let signature = rpc_client.send_transaction_with_config(
         &Transaction::new_signed_with_payer(
@@ -322,7 +340,7 @@ pub fn send_trade(
         ),
         RpcSendTransactionConfig {
             skip_preflight: true,
-            preflight_commitment: Some(solana_sdk::commitment_config::CommitmentLevel::Confirmed),
+            preflight_commitment: Some(CommitmentLevel::Confirmed),
             encoding: None,
             max_retries: Some(0),
             min_context_slot: None,
