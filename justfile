@@ -12,6 +12,9 @@ trade-mainnet BASE QUOTE CSV_NAME LOG_NAME KEYPAIR:
 du:
     @du -sh trades/ | awk '{printf "Trades (%s total):\n", $1}' && du -ah trades/*.csv | sort -hr | awk '{printf "    %s %s\n", $1, $NF}' | sed 's/trades\/\(.*\)/\1/' && du -sh data/ | awk '{printf "\nData (%s total):\n", $1}' && du -ah data/*.csv | sort -hr | awk '{printf "    %s %s\n", $1, $NF}' | sed 's/data\/\(.*\)/\1/' && du -sh logs/ | awk '{printf "\nLogs (%s total):\n", $1}' && du -ah logs/*.log | sort -hr | awk '{printf "    %s %s\n", $1, $NF}' | sed 's/logs\/\(.*\)/\1/'
 
+clear-trades:
+    rm trades/*.csv
+
 clear-data:
     rm data/*.csv
 

@@ -331,7 +331,7 @@ pub fn send_trade(
             break;
         }
     }
-    let start = Instant::now();
+
     let signature = rpc_client.send_transaction_with_config(
         &Transaction::new_signed_with_payer(
             &ixs,
@@ -347,8 +347,6 @@ pub fn send_trade(
             min_context_slot: None,
         },
     )?;
-    let elapsed = start.elapsed();
-    // info!("Got trade signature in {:?}", elapsed);
 
     Ok(signature)
 }

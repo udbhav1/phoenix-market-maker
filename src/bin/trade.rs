@@ -33,7 +33,7 @@ use url::Url;
 use phoenix::program::{
     create_cancel_all_order_with_free_funds_instruction, create_deposit_funds_instruction,
 };
-use phoenix::state::{SelfTradeBehavior, Side};
+use phoenix::state::Side;
 use phoenix_sdk::order_packet_template::PostOnlyOrderTemplate;
 use phoenix_sdk::sdk_client::{MarketEventDetails, SDKClient};
 use solana_cli_config::{Config, CONFIG_FILE};
@@ -298,14 +298,11 @@ async fn trading_logic(
     );
     let base_size: f64 = env::var("TRADE_BASE_SIZE")?.parse()?;
     let dump_threshold: f64 = env::var("TRADE_DUMP_THRESHOLD")?.parse()?;
-    let dump_interval: usize = env::var("TRADE_DUMP_SPAM_INTERVAL")?.parse()?;
 
     let mut i = 0;
     let mut latest_orderbook: Option<Book> = None;
 
-    let mut base_balance: i32 = 0;
-    let mut should_dump = false;
-    let mut dump_counter: usize = 0;
+    let mut base_inventory: i32 = 0;
 
     loop {
         tokio::select! {
@@ -334,11 +331,11 @@ async fn trading_logic(
                 }
 
                 let verb = match my_side {
-                    Side::Bid => { base_balance += fill.size as i32;  "Bought" },
-                    Side::Ask => { base_balance -= fill.size as i32; "Sold" },
+                    Side::Bid => { base_inventory += fill.size as i32;  "Bought" },
+                    Side::Ask => { base_inventory -= fill.size as i32; "Sold" },
                 };
 
-                warn!("{} {} lots at price {}, Inventory: {}", verb, fill.size, (fill.price as f64) / 10000.0, (base_balance as f64) / 100.0);
+                warn!("{} {} lots at price {}, Inventory: {}", verb, fill.size, (fill.price as f64) / 10000.0, (base_inventory as f64) / 100.0);
 
                 match csv_writer {
                     Some(ref mut w) => {
@@ -353,14 +350,6 @@ async fn trading_logic(
                         debug!("No CSV writer provided, skipping writing fill");
                     }
                 }
-
-                if base_balance.abs() as f64 / 100.0 >= dump_threshold {
-                    should_dump = true;
-                } else {
-                    should_dump = false;
-                    dump_counter = 0;
-                }
-
             },
             Some(status) = orderbook_status_rx.recv() => {
                 orderbook_connected = matches!(status, ConnectionStatus::Connected);
@@ -371,88 +360,73 @@ async fn trading_logic(
         }
 
         if orderbook_connected && fill_connected {
-            if should_dump {
-                if dump_counter % dump_interval == 0 {
-                    let side = if base_balance > 0 {
-                        Side::Ask
-                    } else {
-                        Side::Bid
-                    };
-                    let price_limit = if side == Side::Ask {
-                        0
-                    } else {
-                        100000000000000
-                    };
-                    let dump_ix = sdk.get_fok_generic_ix(
-                        &market_pubkey,
-                        price_limit,
-                        side,
-                        base_balance.abs() as u64,
-                        Some(SelfTradeBehavior::Abort),
-                        None,
-                        Some(110110110),
-                        None,
-                    )?;
-
-                    let verb = if side == Side::Ask {
-                        "Selling"
-                    } else {
-                        "Buying"
-                    };
-                    warn!(
-                        "{} {} tokens with fill-or-kill to get flat",
-                        verb,
-                        (base_balance.abs() as f64) / 100.0
-                    );
-
-                    let signature = send_trade(&rpc_client, &trader_keypair, vec![dump_ix])?;
-                    debug!("Dump Signature: {}", signature);
-                }
-                dump_counter += 1;
-            }
             if let Some(book) = &latest_orderbook {
                 let (bids, asks) = book_to_aggregated_levels(&book, 3);
                 debug!("bids: {:?}", bids);
                 debug!("asks: {:?}", asks);
                 let bid_price = bids.last().unwrap().0;
                 let ask_price = asks.last().unwrap().0;
-                info!("Placing a bid at {} and an ask at {}", bid_price, ask_price);
+                let mut bid_size = base_size;
+                let mut ask_size = base_size;
+                if base_inventory.abs() as f64 / 100.0 >= dump_threshold {
+                    if base_inventory > 0 {
+                        bid_size = 0.0;
+                        ask_size = base_inventory.abs() as f64 / 100.0;
+                    } else {
+                        bid_size = base_inventory.abs() as f64 / 100.0;
+                        ask_size = 0.0;
+                    }
+                }
+                info!(
+                    "Quoting {:.4} @ {:.4}, {}x{}, Inventory: {}",
+                    bid_price,
+                    ask_price,
+                    bid_size,
+                    ask_size,
+                    (base_inventory as f64) / 100.0,
+                );
 
-                let expiry_ts = get_time_s()? + 30;
+                let mut ixs = vec![cancel_ix.clone()];
 
-                let bid_ix = sdk.get_post_only_ix_from_template(
-                    &market_pubkey,
-                    &market_metadata,
-                    &PostOnlyOrderTemplate {
-                        side: Side::Bid,
-                        price_as_float: bid_price,
-                        size_in_base_units: base_size,
-                        client_order_id: 420420420,
-                        reject_post_only: true,
-                        use_only_deposited_funds: false,
-                        last_valid_slot: None,
-                        last_valid_unix_timestamp_in_seconds: Some(expiry_ts),
-                        fail_silently_on_insufficient_funds: false,
-                    },
-                )?;
+                let expiry_ts = get_time_s()? + 10;
 
-                let ask_ix = sdk.get_post_only_ix_from_template(
-                    &market_pubkey,
-                    &market_metadata,
-                    &PostOnlyOrderTemplate {
-                        side: Side::Ask,
-                        price_as_float: ask_price,
-                        size_in_base_units: base_size,
-                        client_order_id: 240240240,
-                        reject_post_only: true,
-                        use_only_deposited_funds: false,
-                        last_valid_slot: None,
-                        last_valid_unix_timestamp_in_seconds: Some(expiry_ts),
-                        fail_silently_on_insufficient_funds: false,
-                    },
-                )?;
+                if bid_size > 0.0 {
+                    let bid_ix = sdk.get_post_only_ix_from_template(
+                        &market_pubkey,
+                        &market_metadata,
+                        &PostOnlyOrderTemplate {
+                            side: Side::Bid,
+                            price_as_float: bid_price,
+                            size_in_base_units: bid_size,
+                            client_order_id: 420420420,
+                            reject_post_only: true,
+                            use_only_deposited_funds: false,
+                            last_valid_slot: None,
+                            last_valid_unix_timestamp_in_seconds: Some(expiry_ts),
+                            fail_silently_on_insufficient_funds: false,
+                        },
+                    )?;
+                    ixs.push(bid_ix);
+                }
+                if ask_size > 0.0 {
+                    let ask_ix = sdk.get_post_only_ix_from_template(
+                        &market_pubkey,
+                        &market_metadata,
+                        &PostOnlyOrderTemplate {
+                            side: Side::Ask,
+                            price_as_float: ask_price,
+                            size_in_base_units: ask_size,
+                            client_order_id: 240240240,
+                            reject_post_only: true,
+                            use_only_deposited_funds: false,
+                            last_valid_slot: None,
+                            last_valid_unix_timestamp_in_seconds: Some(expiry_ts),
+                            fail_silently_on_insufficient_funds: false,
+                        },
+                    )?;
+                    ixs.push(ask_ix);
+                }
 
-                let ixs = vec![cancel_ix.clone(), bid_ix, ask_ix];
                 let signature = send_trade(&rpc_client, &trader_keypair, ixs)?;
                 debug!("Trade Signature: {}", signature);
 
