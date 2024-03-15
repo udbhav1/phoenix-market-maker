@@ -278,6 +278,7 @@ pub async fn main() -> anyhow::Result<()> {
             let levels: usize = env::var("TRACK_BOOK_LEVELS")?.parse()?;
             let columns = generate_csv_columns(levels);
             writer.write_record(&columns)?;
+            writer.flush()?;
         }
         info!("Dumping books to: {}", path.display());
         Some(writer)

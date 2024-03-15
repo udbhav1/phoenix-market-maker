@@ -14,9 +14,11 @@ use phoenix_market_maker::phoenix_utils::{
 
 use anyhow::{anyhow, Context};
 use clap::Parser;
+use csv::Writer;
 use futures::{SinkExt, StreamExt};
 use std::env;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
+use std::path::Path;
 use std::str::FromStr;
 use std::time::Instant;
 use tokio::sync::mpsc::{self, Sender};
@@ -40,6 +42,36 @@ use solana_sdk::{
     commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Keypair, signature::Signature,
     signer::Signer,
 };
+
+fn generate_csv_columns() -> Vec<String> {
+    vec![
+        "timestamp".to_string(),
+        "slot".to_string(),
+        "side".to_string(),
+        "price".to_string(),
+        "size".to_string(),
+        "maker".to_string(),
+        "taker".to_string(),
+        "signature".to_string(),
+    ]
+}
+
+fn generate_csv_row(fill: &Fill) -> Vec<String> {
+    let side = match fill.side {
+        Side::Bid => "buy",
+        Side::Ask => "sell",
+    };
+    vec![
+        fill.timestamp.to_string(),
+        fill.slot.to_string(),
+        side.to_owned(),
+        fill.price.to_string(),
+        fill.size.to_string(),
+        fill.maker.to_string(),
+        fill.taker.to_string(),
+        fill.signature.to_string(),
+    ]
+}
 
 async fn handle_orderbook_stream(
     url: Url,
@@ -179,6 +211,7 @@ async fn handle_fill_stream(
                                             size: f.base_lots_filled,
                                             side: f.side_filled,
                                             maker: f.maker.to_string(),
+                                            taker: f.taker.to_string(),
                                             slot: event.slot,
                                             timestamp: event.timestamp,
                                             signature: signature_str.clone(),
@@ -253,6 +286,7 @@ async fn trading_logic(
     rpc_client: &RpcClient,
     trader_keypair: &Keypair,
     market_pubkey: &Pubkey,
+    mut csv_writer: Option<&mut Writer<File>>,
 ) -> anyhow::Result<()> {
     let mut orderbook_connected = false;
     let mut fill_connected = false;
@@ -295,20 +329,38 @@ async fn trading_logic(
             },
             Some(fill) = fill_rx.recv() => {
                 let mut my_side = fill.side;
-                if fill.maker != trader_keypair.pubkey().to_string() {
+                if fill.taker == trader_keypair.pubkey().to_string() {
                     my_side = my_side.opposite();
                 }
-                let side = match my_side {
+
+                let verb = match my_side {
                     Side::Bid => { base_balance += fill.size as i32;  "Bought" },
                     Side::Ask => { base_balance -= fill.size as i32; "Sold" },
                 };
+
+                warn!("{} {} lots at price {}, Inventory: {}", verb, fill.size, (fill.price as f64) / 10000.0, (base_balance as f64) / 100.0);
+
+                match csv_writer {
+                    Some(ref mut w) => {
+                        let row = generate_csv_row(&Fill {
+                            side: my_side,
+                            ..fill
+                        });
+                        w.write_record(&row)?;
+                        w.flush()?;
+                    }
+                    None => {
+                        debug!("No CSV writer provided, skipping writing fill");
+                    }
+                }
+
                 if base_balance.abs() as f64 / 100.0 >= dump_threshold {
                     should_dump = true;
                 } else {
                     should_dump = false;
                     dump_counter = 0;
                 }
-                warn!("{} {} lots at price {}, Inventory: {}", side, fill.size, (fill.price as f64) / 10000.0, (base_balance as f64) / 100.0);
+
             },
             Some(status) = orderbook_status_rx.recv() => {
                 orderbook_connected = matches!(status, ConnectionStatus::Connected);
@@ -436,6 +488,10 @@ struct Args {
     #[clap(short, long)]
     quote_symbol: String,
 
+    /// Optional CSV path to dump fills to.
+    #[clap(short, long)]
+    output: Option<String>,
+
     /// Optional log file path to mirror stdout.
     #[clap(short, long, default_value = "./logs/trade.log")]
     log: String,
@@ -525,6 +581,31 @@ pub async fn main() -> anyhow::Result<()> {
         }
     }
 
+    let mut csv_writer = if let Some(path) = args.output {
+        let path = Path::new(&path);
+        let file_exists = path.exists();
+
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(true)
+            .open(&path)?;
+
+        let mut writer = Writer::from_writer(file);
+
+        // If the file was newly created (or is empty), write the headers
+        if !file_exists || std::fs::metadata(&path)?.len() == 0 {
+            let columns = generate_csv_columns();
+            writer.write_record(&columns)?;
+            writer.flush()?;
+        }
+        info!("Dumping fills to: {}", path.display());
+        Some(writer)
+    } else {
+        info!("No CSV provided, not dumping fills");
+        None
+    };
+
     let start = Instant::now();
     rpc_client.get_latest_blockhash()?;
     let end = Instant::now();
@@ -577,6 +658,7 @@ pub async fn main() -> anyhow::Result<()> {
         &rpc_client,
         &trader,
         &market_pubkey,
+        csv_writer.as_mut(),
     )
     .await
     .unwrap();

@@ -31,6 +31,7 @@ pub struct Fill {
     pub size: u64,
     pub side: Side,
     pub maker: String,
+    pub taker: String,
     pub slot: u64,
     pub timestamp: i64,
     pub signature: String,
