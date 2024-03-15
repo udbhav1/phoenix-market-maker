@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::env;
 use std::io::Read;
 use std::mem::size_of;
+use std::time::Instant;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 
@@ -28,6 +29,7 @@ pub struct Fill {
     pub price: u64,
     pub size: u64,
     pub side: Side,
+    pub maker: String,
     pub slot: u64,
     pub timestamp: i64,
     pub signature: String,
@@ -310,6 +312,8 @@ pub fn send_trade(
 
     let blockhash = rpc_client.get_latest_blockhash()?;
 
+    debug!("Trade instructions: {:?}", ixs);
+    let start = Instant::now();
     let signature = rpc_client.send_transaction_with_config(
         &Transaction::new_signed_with_payer(
             &ixs,
@@ -325,6 +329,8 @@ pub fn send_trade(
             min_context_slot: None,
         },
     )?;
+    let elapsed = start.elapsed();
+    // info!("Got trade signature in {:?}", elapsed);
 
     Ok(signature)
 }

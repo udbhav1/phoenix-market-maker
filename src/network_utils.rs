@@ -26,7 +26,7 @@ pub const TRANSACTION_SUBSCRIBE_JSON: &str = r#"
         {
             "vote": false,
             "failed": false,
-            "accountRequired": ["{1}", "{2}"]
+            "accountRequired": ["{1}"]
         },
         {
             "commitment": "confirmed",
@@ -150,6 +150,13 @@ pub fn get_enhanced_ws_url(network_str: &str, api_key: &str) -> anyhow::Result<S
         )),
         _ => Err(anyhow!("Invalid network provided: {}", network_str)),
     }
+}
+
+pub fn get_time_s() -> anyhow::Result<u64> {
+    let now = SystemTime::now();
+    let since_epoch = now.duration_since(UNIX_EPOCH)?;
+
+    Ok(since_epoch.as_secs())
 }
 
 pub fn get_time_ms() -> anyhow::Result<u64> {
