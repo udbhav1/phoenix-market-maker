@@ -312,7 +312,6 @@ pub fn send_trade(
 
     let blockhash = rpc_client.get_latest_blockhash()?;
 
-    debug!("Trade instructions: {:?}", ixs);
     let start = Instant::now();
     let signature = rpc_client.send_transaction_with_config(
         &Transaction::new_signed_with_payer(

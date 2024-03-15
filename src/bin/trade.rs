@@ -306,7 +306,7 @@ async fn trading_logic(
         }
 
         if orderbook_connected && fill_connected {
-            if (base_balance as f64) / 100.0 >= dump_threshold {
+            if (base_balance.abs() as f64) / 100.0 >= dump_threshold {
                 let side = if base_balance > 0 {
                     Side::Ask
                 } else {
@@ -316,7 +316,7 @@ async fn trading_logic(
                     &market_pubkey,
                     0,
                     side,
-                    base_balance as u64,
+                    base_balance.abs() as u64,
                     Some(SelfTradeBehavior::Abort),
                     None,
                     Some(110110110),
@@ -331,7 +331,7 @@ async fn trading_logic(
                 warn!(
                     "{} {} JUP with fill-or-kill to get flat",
                     verb,
-                    (base_balance as f64) / 100.0
+                    (base_balance.abs() as f64) / 100.0
                 );
 
                 let signature = send_trade(&rpc_client, &trader_keypair, vec![dump_ix])?;
