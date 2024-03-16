@@ -298,6 +298,7 @@ async fn trading_logic(
     );
     let base_size: f64 = env::var("TRADE_BASE_SIZE")?.parse()?;
     let dump_threshold: f64 = env::var("TRADE_DUMP_THRESHOLD")?.parse()?;
+    let time_in_force: u64 = env::var("TRADE_TIME_IN_FORCE")?.parse()?;
 
     let mut i = 0;
     let mut latest_orderbook: Option<Book> = None;
@@ -390,7 +391,7 @@ async fn trading_logic(
 
                 let mut ixs = vec![cancel_ix.clone()];
 
-                let expiry_ts = get_time_s()? + 10;
+                let expiry_ts = get_time_s()? + time_in_force;
 
                 if bid_size > 0.0 {
                     let bid_ix = sdk.get_post_only_ix_from_template(
