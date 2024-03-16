@@ -324,6 +324,8 @@ pub fn send_trade(
     ixs.insert(0, compute_price_ix);
     ixs.insert(0, compute_budget_ix);
 
+    let dupes: usize = env::var("TRADE_DUPLICATE_TXS")?.parse()?;
+
     let mut blockhash;
     loop {
         blockhash = rpc_client.get_latest_blockhash()?;
@@ -332,21 +334,27 @@ pub fn send_trade(
         }
     }
 
-    let signature = rpc_client.send_transaction_with_config(
-        &Transaction::new_signed_with_payer(
-            &ixs,
-            Some(&trader_keypair.pubkey()),
-            &[trader_keypair],
-            blockhash,
-        ),
-        RpcSendTransactionConfig {
-            skip_preflight: true,
-            preflight_commitment: Some(CommitmentLevel::Confirmed),
-            encoding: None,
-            max_retries: Some(0),
-            min_context_slot: None,
-        },
-    )?;
+    let mut signature = None;
+    let start = Instant::now();
+    for _ in 1..=dupes {
+        signature = Some(rpc_client.send_transaction_with_config(
+            &Transaction::new_signed_with_payer(
+                &ixs,
+                Some(&trader_keypair.pubkey()),
+                &[trader_keypair],
+                blockhash,
+            ),
+            RpcSendTransactionConfig {
+                skip_preflight: true,
+                preflight_commitment: Some(CommitmentLevel::Confirmed),
+                encoding: None,
+                max_retries: Some(0),
+                min_context_slot: None,
+            },
+        )?);
+    }
+    let elapsed = start.elapsed();
+    debug!("Trade txs sent in {}ms", elapsed.as_millis());
 
-    Ok(signature)
+    Ok(signature.ok_or(anyhow!("Trade signature not received"))?)
 }

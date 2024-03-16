@@ -14,6 +14,7 @@ notebooks/trades/*
 notebooks/data/*
 !notebooks/data/.gitkeep
 
+**/__pycache__/
 **/*.ipynb_checkpoints/
 debug/
 target/
