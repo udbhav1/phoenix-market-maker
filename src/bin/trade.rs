@@ -361,21 +361,23 @@ async fn trading_logic(
 
         if orderbook_connected && fill_connected {
             if let Some(book) = &latest_orderbook {
-                let (bids, asks) = book_to_aggregated_levels(&book, 3);
+                let (bids, asks) = book_to_aggregated_levels(&book, 2);
                 debug!("bids: {:?}", bids);
                 debug!("asks: {:?}", asks);
                 let bid_price = bids.last().unwrap().0;
                 let ask_price = asks.last().unwrap().0;
                 let mut bid_size = base_size;
                 let mut ask_size = base_size;
-                if base_inventory.abs() as f64 / 100.0 >= dump_threshold {
-                    if base_inventory > 0 {
+                if base_inventory > 0 {
+                    if base_inventory.abs() as f64 / 100.0 >= dump_threshold {
                         bid_size = 0.0;
-                        ask_size = base_inventory.abs() as f64 / 100.0;
-                    } else {
-                        bid_size = base_inventory.abs() as f64 / 100.0;
+                    }
+                    ask_size = base_inventory.abs() as f64 / 100.0;
+                } else if base_inventory < 0 {
+                    if base_inventory.abs() as f64 / 100.0 >= dump_threshold {
                         ask_size = 0.0;
                     }
+                    bid_size = base_inventory.abs() as f64 / 100.0;
                 }
                 info!(
                     "Quoting {:.4} @ {:.4}, {}x{}, Inventory: {}",
