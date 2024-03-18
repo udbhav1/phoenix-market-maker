@@ -358,3 +358,33 @@ pub fn send_trade(
 
     Ok(signature.ok_or(anyhow!("Trade signature not received"))?)
 }
+
+/// Lean is is between -1 and 1 and represents inventory to offload
+/// -1 means we're unacceptably short so bid at fair value
+/// 1 means we're unacceptably long so ask at fair value
+/// 0 means we're neutral so quote symmetrically
+pub fn get_quotes_from_width_and_lean(fair_value: f64, width_bps: f64, lean: f64) -> (f64, f64) {
+    let width = fair_value * width_bps / 10_000.0;
+
+    let bid_adjustment = (1.0 + lean) * width / 2.0;
+    let ask_adjustment = (1.0 - lean) * width / 2.0;
+
+    let bid = fair_value - bid_adjustment;
+    let ask = fair_value + ask_adjustment;
+
+    (bid, ask)
+}
+
+pub fn get_midpoint(bids: &[(f64, f64)], asks: &[(f64, f64)]) -> f64 {
+    let (bid, _) = bids.first().unwrap();
+    let (ask, _) = asks.first().unwrap();
+
+    (bid + ask) / 2.0
+}
+
+pub fn get_rwap(bids: &[(f64, f64)], asks: &[(f64, f64)]) -> f64 {
+    let (bid, bid_size) = bids.first().unwrap();
+    let (ask, ask_size) = asks.first().unwrap();
+
+    (bid * ask_size + ask * bid_size) / (bid_size + ask_size)
+}

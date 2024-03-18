@@ -8,8 +8,9 @@ use phoenix_market_maker::network_utils::{
 #[allow(unused_imports)]
 use phoenix_market_maker::network_utils::{get_time_ms, get_time_s};
 use phoenix_market_maker::phoenix_utils::{
-    book_to_aggregated_levels, get_book_from_account_data, send_trade, setup_maker,
-    symbols_to_market_address, Book, Fill,
+    book_to_aggregated_levels, get_book_from_account_data, get_midpoint,
+    get_quotes_from_width_and_lean, get_rwap, send_trade, setup_maker, symbols_to_market_address,
+    Book, Fill,
 };
 
 use anyhow::{anyhow, Context};
@@ -296,8 +297,10 @@ async fn trading_logic(
         &market_pubkey,
         &trader_keypair.pubkey(),
     );
+    let width_bps: f64 = env::var("TRADE_WIDTH_BPS")?.parse()?;
     let base_size: f64 = env::var("TRADE_BASE_SIZE")?.parse()?;
     let dump_threshold: f64 = env::var("TRADE_DUMP_THRESHOLD")?.parse()?;
+    let max_lean: f64 = env::var("TRADE_MAX_LEAN")?.parse()?;
     let time_in_force: u64 = env::var("TRADE_TIME_IN_FORCE")?.parse()?;
 
     let mut i = 0;
@@ -365,8 +368,25 @@ async fn trading_logic(
                 let (bids, asks) = book_to_aggregated_levels(&book, 2);
                 debug!("bids: {:?}", bids);
                 debug!("asks: {:?}", asks);
-                let bid_price = bids.last().unwrap().0;
-                let ask_price = asks.last().unwrap().0;
+
+                let midpoint = get_midpoint(&bids, &asks);
+                let rwap = get_rwap(&bids, &asks);
+                let best_bid = bids.first().unwrap().0;
+                let best_ask = asks.first().unwrap().0;
+                let width = (best_ask - best_bid) * 10000.0 / midpoint;
+
+                // linearly interpolate up to max_lean
+                let inventory_ratio = (base_inventory as f64) / 100.0 / dump_threshold;
+                let inventory_ratio = inventory_ratio.clamp(-1.0, 1.0);
+                let lean = max_lean * inventory_ratio;
+                let (bid_price, ask_price) =
+                    get_quotes_from_width_and_lean(midpoint, width_bps, lean);
+
+                // just hop on the (stale) second level
+                // how did this ever make money
+                // let bid_price = bids.last().unwrap().0;
+                // let ask_price = asks.last().unwrap().0;
+
                 let mut bid_size = base_size;
                 let mut ask_size = base_size;
                 if base_inventory > 0 {
@@ -380,8 +400,10 @@ async fn trading_logic(
                     }
                     bid_size = base_inventory.abs() as f64 / 100.0;
                 }
+
                 info!(
-                    "Quoting {:.4} @ {:.4}, {}x{}, Inventory: {}",
+                    "Book width: {}bps, Quoting {:.4} @ {:.4}, {}x{}, Inventory: {}",
+                    width.round(),
                     bid_price,
                     ask_price,
                     bid_size,
