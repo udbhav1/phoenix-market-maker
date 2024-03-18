@@ -9,8 +9,8 @@ use phoenix_market_maker::network_utils::{
 use phoenix_market_maker::network_utils::{get_time_ms, get_time_s};
 use phoenix_market_maker::phoenix_utils::{
     book_to_aggregated_levels, get_book_from_account_data, get_midpoint,
-    get_quotes_from_width_and_lean, get_rwap, send_trade, setup_maker, symbols_to_market_address,
-    Book, Fill,
+    get_quotes_from_width_and_lean, get_rwap, send_trade_rpc, send_trade_tpu, setup_maker,
+    symbols_to_market_address, Book, Fill,
 };
 
 use anyhow::{anyhow, Context};
@@ -21,6 +21,7 @@ use std::env;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::{sleep, Duration};
@@ -39,6 +40,7 @@ use phoenix_sdk::order_packet_template::PostOnlyOrderTemplate;
 use phoenix_sdk::sdk_client::{MarketEventDetails, SDKClient};
 use solana_cli_config::{Config, CONFIG_FILE};
 use solana_client::rpc_client::RpcClient;
+use solana_client::tpu_client::{TpuClient, TpuClientConfig};
 use solana_sdk::{
     commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Keypair, signature::Signature,
     signer::Signer,
@@ -285,6 +287,7 @@ async fn trading_logic(
     mut fill_status_rx: mpsc::Receiver<ConnectionStatus>,
     sdk: &SDKClient,
     rpc_client: &RpcClient,
+    tpu_client: &TpuClient,
     trader_keypair: &Keypair,
     market_pubkey: &Pubkey,
     mut csv_writer: Option<&mut Writer<File>>,
@@ -452,14 +455,10 @@ async fn trading_logic(
                     ixs.push(ask_ix);
                 }
 
-                let signature = send_trade(&rpc_client, &trader_keypair, ixs)?;
-                debug!("Trade Signature: {}", signature);
+                // let signature = send_trade_rpc(&rpc_client, &trader_keypair, ixs)?;
+                // debug!("Trade Signature: {}", signature);
 
-                // let rpc_client_clone = rpc_client.clone();
-                // let trader_keypair_clone = trader_keypair.clone();
-                // tokio::task::spawn_blocking(move || {
-                //     send_trade(&rpc_client_clone, &trader_keypair_clone, ixs)
-                // });
+                send_trade_tpu(&tpu_client, &trader_keypair, ixs)?;
             }
         } else {
             // One or both streams are disconnected; pause trading logic
@@ -613,6 +612,17 @@ pub async fn main() -> anyhow::Result<()> {
     let ws_url = get_ws_url(&provided_network, &api_key)?;
     let enhanced_ws_url = get_enhanced_ws_url(&provided_network, &api_key)?;
 
+    let rpc_for_tpu = RpcClient::new_with_timeout_and_commitment(
+        network_url.clone(),
+        Duration::from_secs(3),
+        CommitmentConfig::confirmed(),
+    );
+    let tpu_client = TpuClient::new(
+        Arc::new(rpc_for_tpu),
+        &ws_url,
+        TpuClientConfig { fanout_slots: 12 },
+    )?;
+
     let (orderbook_tx, orderbook_rx) = mpsc::channel(32);
     let (orderbook_status_tx, orderbook_status_rx) = mpsc::channel(32);
 
@@ -655,6 +665,7 @@ pub async fn main() -> anyhow::Result<()> {
         fill_status_rx,
         &sdk1,
         &rpc_client,
+        &tpu_client,
         &trader,
         &market_pubkey,
         csv_writer.as_mut(),

@@ -17,6 +17,8 @@ use phoenix_sdk::orderbook::{Orderbook, OrderbookKey, OrderbookValue};
 use phoenix_sdk::sdk_client::{MarketMetadata, PhoenixOrder, SDKClient};
 use solana_client::rpc_client::RpcClient;
 use solana_client::rpc_config::RpcSendTransactionConfig;
+use solana_client::tpu_client::TpuClient;
+use solana_program::hash::Hash;
 use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::{
     compute_budget::ComputeBudgetInstruction, instruction::Instruction, pubkey::Pubkey,
@@ -272,6 +274,17 @@ pub fn get_ladder(orderbook: &Book, levels: usize, precision: usize) -> String {
     out.join("\n")
 }
 
+pub fn get_latest_valid_blockhash(rpc_client: &RpcClient) -> anyhow::Result<Hash> {
+    let mut blockhash;
+    loop {
+        blockhash = rpc_client.get_latest_blockhash()?;
+        if rpc_client.is_blockhash_valid(&blockhash, CommitmentConfig::confirmed())? {
+            break;
+        }
+    }
+    Ok(blockhash)
+}
+
 pub async fn setup_maker(
     sdk: &SDKClient,
     rpc_client: &RpcClient,
@@ -289,13 +302,7 @@ pub async fn setup_maker(
     debug!("Setup ixs: {:?}", setup_ixs);
     if !setup_ixs.is_empty() {
         info!("Finding valid blockhash");
-        let mut blockhash;
-        loop {
-            blockhash = rpc_client.get_latest_blockhash()?;
-            if rpc_client.is_blockhash_valid(&blockhash, CommitmentConfig::confirmed())? {
-                break;
-            }
-        }
+        let blockhash = get_latest_valid_blockhash(rpc_client)?;
         info!("Sending setup tx");
         return Ok(Some(rpc_client.send_and_confirm_transaction(
             &Transaction::new_signed_with_payer(
@@ -310,11 +317,7 @@ pub async fn setup_maker(
     }
 }
 
-pub fn send_trade(
-    rpc_client: &RpcClient,
-    trader_keypair: &Keypair,
-    mut ixs: Vec<Instruction>,
-) -> anyhow::Result<Signature> {
+pub fn add_compute_budget(mut ixs: Vec<Instruction>) -> anyhow::Result<Vec<Instruction>> {
     let compute_budget = env::var("TRADE_COMPUTE_UNIT_LIMIT")?.parse()?;
     let compute_price = env::var("TRADE_COMPUTE_UNIT_PRICE")?.parse()?;
 
@@ -324,15 +327,18 @@ pub fn send_trade(
     ixs.insert(0, compute_price_ix);
     ixs.insert(0, compute_budget_ix);
 
+    Ok(ixs)
+}
+
+pub fn send_trade_rpc(
+    rpc_client: &RpcClient,
+    trader_keypair: &Keypair,
+    mut ixs: Vec<Instruction>,
+) -> anyhow::Result<Signature> {
     let dupes: usize = env::var("TRADE_DUPLICATE_TXS")?.parse()?;
 
-    let mut blockhash;
-    loop {
-        blockhash = rpc_client.get_latest_blockhash()?;
-        if rpc_client.is_blockhash_valid(&blockhash, CommitmentConfig::confirmed())? {
-            break;
-        }
-    }
+    ixs = add_compute_budget(ixs)?;
+    let blockhash = get_latest_valid_blockhash(rpc_client)?;
 
     let mut signature = None;
     let start = Instant::now();
@@ -354,9 +360,34 @@ pub fn send_trade(
         )?);
     }
     let elapsed = start.elapsed();
-    debug!("Trade txs sent in {}ms", elapsed.as_millis());
+    debug!("RPC trade sent in {}ms", elapsed.as_millis());
 
     Ok(signature.ok_or(anyhow!("Trade signature not received"))?)
+}
+
+pub fn send_trade_tpu(
+    tpu_client: &TpuClient,
+    trader_keypair: &Keypair,
+    mut ixs: Vec<Instruction>,
+) -> anyhow::Result<()> {
+    let dupes: usize = env::var("TRADE_DUPLICATE_TXS")?.parse()?;
+
+    ixs = add_compute_budget(ixs)?;
+    let blockhash = get_latest_valid_blockhash(tpu_client.rpc_client())?;
+
+    let start = Instant::now();
+    for _ in 1..=dupes {
+        tpu_client.try_send_transaction(&Transaction::new_signed_with_payer(
+            &ixs,
+            Some(&trader_keypair.pubkey()),
+            &[trader_keypair],
+            blockhash,
+        ))?
+    }
+    let elapsed = start.elapsed();
+    debug!("TPU trade sent in {}ms", elapsed.as_millis());
+
+    Ok(())
 }
 
 /// Lean is is between -1 and 1 and represents inventory to offload
