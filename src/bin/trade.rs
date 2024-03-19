@@ -32,9 +32,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
 
-use phoenix::program::{
-    create_cancel_all_order_with_free_funds_instruction, create_deposit_funds_instruction,
-};
+use phoenix::program::create_cancel_all_order_with_free_funds_instruction;
 use phoenix::state::Side;
 use phoenix_sdk::order_packet_template::PostOnlyOrderTemplate;
 use phoenix_sdk::sdk_client::{MarketEventDetails, SDKClient};
