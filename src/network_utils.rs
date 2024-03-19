@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use solana_sdk::signature::{read_keypair_file, Keypair};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub const OKX_WS_URL: &str = "wss://wsaws.okx.com:8443/ws/v5/public";
+
 pub const ACCOUNT_SUBSCRIBE_JSON: &str = r#"
 {
     "jsonrpc": "2.0",
@@ -34,6 +36,17 @@ pub const TRANSACTION_SUBSCRIBE_JSON: &str = r#"
             "transaction_details": "full",
             "showRewards": false,
             "maxSupportedTransactionVersion": 0
+        }
+    ]
+}"#;
+
+pub const OKX_SUBSCRIBE_JSON: &str = r#"
+{
+    "op": "subscribe",
+    "args": [
+        {
+            "channel": "mark-price",
+            "instId": "{1}"
         }
     ]
 }"#;
@@ -105,6 +118,36 @@ pub struct TransactionSubscribeParams {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TransactionSubscribeParamsResult {
     pub signature: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
+pub struct OkxSubscribeConfirmation {
+    pub event: String,
+    pub arg: OkxSubscribeArg,
+    pub connId: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
+pub struct OkxSubscribeArg {
+    pub channel: String,
+    pub instId: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OkxSubscribeResponse {
+    pub arg: OkxSubscribeArg,
+    pub data: Vec<OkxSubscribeData>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
+pub struct OkxSubscribeData {
+    pub instId: String,
+    pub instType: String,
+    pub markPx: String,
+    pub ts: String,
 }
 
 pub fn get_payer_keypair_from_path(path: &str) -> anyhow::Result<Keypair> {
