@@ -392,6 +392,7 @@ async fn trading_logic(
         &trader_keypair.pubkey(),
     );
     let should_trade = bool::from_str(&env::var("TRADE_QUOTES_ENABLED")?)?;
+    let use_tpu = bool::from_str(&env::var("TRADE_USE_TPU")?)?;
     let width_bps: f64 = env::var("TRADE_WIDTH_BPS")?.parse()?;
     let base_size: f64 = env::var("TRADE_BASE_SIZE")?.parse()?;
     let dump_threshold: f64 = env::var("TRADE_DUMP_THRESHOLD")?.parse()?;
@@ -401,7 +402,7 @@ async fn trading_logic(
     info!("Quotes enabled: {}", should_trade);
 
     let mut i = 0;
-    let mut latest_orderbook: Option<Book> = None;
+    let mut latest_orderbook = None;
     let mut base_inventory: i32 = 0;
     let mut latest_oracle_price = None;
     let mut last_trade_opportunity_oracle_price = 0.0;
@@ -580,10 +581,12 @@ async fn trading_logic(
                 ixs.push(place_multiple_orders);
 
                 if should_trade {
-                    let signature = send_trade_rpc(&rpc_client, &trader_keypair, ixs)?;
-                    debug!("Trade Signature: {}", signature);
-
-                    // send_trade_tpu(&tpu_client, &trader_keypair, ixs)?;
+                    if use_tpu {
+                        send_trade_tpu(&tpu_client, &trader_keypair, ixs)?;
+                    } else {
+                        let signature = send_trade_rpc(&rpc_client, &trader_keypair, ixs)?;
+                        debug!("Trade Signature: {}", signature);
+                    }
                 }
             }
         } else {

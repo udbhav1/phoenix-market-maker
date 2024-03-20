@@ -28,6 +28,19 @@ use solana_sdk::{
 pub type Book = Orderbook<FIFOOrderId, PhoenixOrder>;
 
 #[derive(Debug, Clone)]
+pub struct BookRecv {
+    pub book: Book,
+    pub timestamp_ms: u64,
+    pub slot: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct OracleRecv {
+    pub price: f64,
+    pub timestamp_ms: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct Fill {
     pub price: u64,
     pub size: u64,
