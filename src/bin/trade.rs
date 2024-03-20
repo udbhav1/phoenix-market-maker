@@ -33,9 +33,13 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
 
-use phoenix::program::create_cancel_all_order_with_free_funds_instruction;
+use phoenix::program::new_order::{
+    CondensedOrder, FailedMultipleLimitOrderBehavior, MultipleOrderPacket,
+};
+use phoenix::program::{
+    create_cancel_all_order_with_free_funds_instruction, create_new_multiple_order_instruction,
+};
 use phoenix::state::Side;
-use phoenix_sdk::order_packet_template::PostOnlyOrderTemplate;
 use phoenix_sdk::sdk_client::{MarketEventDetails, SDKClient};
 use solana_cli_config::{Config, CONFIG_FILE};
 use solana_client::rpc_client::RpcClient;
@@ -521,70 +525,65 @@ async fn trading_logic(
                 }
 
                 info!(
-                    "Width: {}bps, Oracle: {:.4}, Book rwap: {:.4}, Book distance from oracle: {}bps",
+                    "Width: {}bps, Distance from oracle: {}bps, Quoting {:.4} @ {:.4}, {}x{}, Inventory: {}",
                     width.round(),
-                    oracle_price,
-                    rwap,
-                    ((rwap - oracle_price) * 10000.0 / oracle_price).round()
+                    ((rwap - oracle_price) * 10000.0 / oracle_price).round(),
+                    bid_price,
+                    ask_price,
+                    bid_size,
+                    ask_size,
+                    (base_inventory as f64) / 100.0,
                 );
-
-                // info!(
-                //     "Book width: {}bps, Oracle: {}, Quoting {:.4} @ {:.4}, {}x{}, Inventory: {}",
-                //     width.round(),
-                //     oracle_price,
-                //     bid_price,
-                //     ask_price,
-                //     bid_size,
-                //     ask_size,
-                //     (base_inventory as f64) / 100.0,
-                // );
 
                 let mut ixs = vec![cancel_ix.clone()];
 
                 let expiry_ts = get_time_s()? + time_in_force;
 
+                let mut bids = Vec::new();
+                let mut asks = Vec::new();
+
                 if bid_size > 0.0 {
-                    let bid_ix = sdk.get_post_only_ix_from_template(
-                        &market_pubkey,
-                        &market_metadata,
-                        &PostOnlyOrderTemplate {
-                            side: Side::Bid,
-                            price_as_float: bid_price,
-                            size_in_base_units: bid_size,
-                            client_order_id: 420420420,
-                            reject_post_only: true,
-                            use_only_deposited_funds: false,
-                            last_valid_slot: None,
-                            last_valid_unix_timestamp_in_seconds: Some(expiry_ts),
-                            fail_silently_on_insufficient_funds: false,
-                        },
-                    )?;
-                    ixs.push(bid_ix);
+                    bids.push(CondensedOrder {
+                        price_in_ticks: sdk
+                            .float_price_to_ticks_rounded_down(&market_pubkey, bid_price)?,
+                        size_in_base_lots: sdk
+                            .raw_base_units_to_base_lots_rounded_down(&market_pubkey, bid_size)?,
+                        last_valid_slot: None,
+                        last_valid_unix_timestamp_in_seconds: Some(expiry_ts),
+                    });
                 }
+
                 if ask_size > 0.0 {
-                    let ask_ix = sdk.get_post_only_ix_from_template(
-                        &market_pubkey,
-                        &market_metadata,
-                        &PostOnlyOrderTemplate {
-                            side: Side::Ask,
-                            price_as_float: ask_price,
-                            size_in_base_units: ask_size,
-                            client_order_id: 240240240,
-                            reject_post_only: true,
-                            use_only_deposited_funds: false,
-                            last_valid_slot: None,
-                            last_valid_unix_timestamp_in_seconds: Some(expiry_ts),
-                            fail_silently_on_insufficient_funds: false,
-                        },
-                    )?;
-                    ixs.push(ask_ix);
+                    asks.push(CondensedOrder {
+                        price_in_ticks: sdk
+                            .float_price_to_ticks_rounded_down(&market_pubkey, ask_price)?,
+                        size_in_base_lots: sdk
+                            .raw_base_units_to_base_lots_rounded_down(&market_pubkey, ask_size)?,
+                        last_valid_slot: None,
+                        last_valid_unix_timestamp_in_seconds: Some(expiry_ts),
+                    });
                 }
+
+                let place_multiple_orders = create_new_multiple_order_instruction(
+                    &market_pubkey,
+                    &trader_keypair.pubkey(),
+                    &market_metadata.base_mint,
+                    &market_metadata.quote_mint,
+                    &MultipleOrderPacket {
+                        bids,
+                        asks,
+                        client_order_id: Some(110110110),
+                        failed_multiple_limit_order_behavior:
+                            FailedMultipleLimitOrderBehavior::FailOnInsufficientFundsAndFailOnCross,
+                    },
+                );
+                ixs.push(place_multiple_orders);
 
                 if should_trade {
-                    // let signature = send_trade_rpc(&rpc_client, &trader_keypair, ixs)?;
-                    // debug!("Trade Signature: {}", signature);
+                    let signature = send_trade_rpc(&rpc_client, &trader_keypair, ixs)?;
+                    debug!("Trade Signature: {}", signature);
 
-                    send_trade_tpu(&tpu_client, &trader_keypair, ixs)?;
+                    // send_trade_tpu(&tpu_client, &trader_keypair, ixs)?;
                 }
             }
         } else {
@@ -743,7 +742,7 @@ pub async fn main() -> anyhow::Result<()> {
 
     let rpc_for_tpu = RpcClient::new_with_timeout_and_commitment(
         network_url.clone(),
-        Duration::from_secs(3),
+        Duration::from_secs(5),
         CommitmentConfig::confirmed(),
     );
     let tpu_client = TpuClient::new(
@@ -791,6 +790,7 @@ pub async fn main() -> anyhow::Result<()> {
     });
 
     let okx_instrument = format!("{}-USDT-SWAP", base_symbol.to_uppercase());
+    // let okx_instrument = "JUP-USDT-SWAP".to_owned();
     tokio::spawn(async move {
         okx_stream(okx_tx, okx_status_tx, &OKX_WS_URL, &okx_instrument)
             .await

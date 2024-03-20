@@ -160,7 +160,6 @@ pub fn get_network(network_str: &str, api_key: &str) -> anyhow::Result<String> {
         "mainnet" | "main" | "m" | "mainnet-beta" => {
             Ok("https://api.mainnet-beta.solana.com".to_owned())
         }
-
         "helius_mainnet" => Ok(format!(
             "https://mainnet.helius-rpc.com/?api-key={}",
             api_key

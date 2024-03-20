@@ -21,8 +21,8 @@ clear-data:
 clear-logs:
     rm logs/*.log
 
-watch MARKET TRADER:
-    watch -n1 "phoenix-cli get-open-orders {{MARKET}} -t {{TRADER}} --url main"
+watch URL MARKET TRADER:
+    watch -n1 "phoenix-cli get-open-orders {{MARKET}} -t {{TRADER}} --url {{URL}}"
 
 balance KEYPAIR:
     @spl-token accounts --url m --owner {{KEYPAIR}} | tail -n +3
