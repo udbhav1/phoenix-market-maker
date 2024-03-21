@@ -476,7 +476,7 @@ pub async fn main() -> anyhow::Result<()> {
     let (orderbook_tx, orderbook_rx) = mpsc::channel(32);
     let (orderbook_status_tx, orderbook_status_rx) = mpsc::channel(32);
 
-    let (okx_tx, okx_rx) = mpsc::channel(256);
+    let (okx_tx, okx_rx) = mpsc::channel(512);
     let (okx_status_tx, okx_status_rx) = mpsc::channel(32);
 
     let ws_url = get_ws_url(&provided_network, &api_key)?;
