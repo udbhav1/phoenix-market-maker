@@ -1,7 +1,7 @@
 use crate::network_utils::{get_solana_enhanced_ws_url, get_time_ms};
-use crate::phoenix_utils::{ExchangeUpdate, PhoenixFillRecv};
+use crate::phoenix_utils::PhoenixFillRecv;
 
-use super::ExchangeWebsocketHandler;
+use super::{ExchangeUpdate, ExchangeWebsocketHandler};
 use std::env;
 use std::str::FromStr;
 

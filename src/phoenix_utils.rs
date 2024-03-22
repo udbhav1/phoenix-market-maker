@@ -11,8 +11,8 @@ use std::time::Instant;
 use tracing::{debug, error, info, trace, warn};
 
 use phoenix::program::{dispatch_market::load_with_dispatch, MarketHeader};
-use phoenix::state::enums::Side;
 use phoenix::state::markets::FIFOOrderId;
+use phoenix::state::Side;
 use phoenix_sdk::orderbook::{Orderbook, OrderbookKey, OrderbookValue};
 use phoenix_sdk::sdk_client::{MarketMetadata, PhoenixOrder, SDKClient};
 use solana_client::rpc_client::RpcClient;
@@ -26,12 +26,6 @@ use solana_sdk::{
 };
 
 pub type Book = Orderbook<FIFOOrderId, PhoenixOrder>;
-
-pub enum ExchangeUpdate {
-    Phoenix(PhoenixRecv),
-    PhoenixFill(PhoenixFillRecv),
-    Oracle(OracleRecv),
-}
 
 #[derive(Debug, Clone)]
 pub struct PhoenixRecv {
@@ -51,21 +45,6 @@ pub struct PhoenixFillRecv {
     pub timestamp: i64,
     pub local_timestamp_ms: u64,
     pub signature: String,
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct OracleRecv {
-    pub bid: f64,
-    pub bid_size: f64,
-    pub ask: f64,
-    pub ask_size: f64,
-    pub timestamp_ms: u64,
-}
-
-impl OracleRecv {
-    pub fn midpoint(&self) -> f64 {
-        (self.bid + self.ask) / 2.0
-    }
 }
 
 // phoenix_sdk::sdk_client::JsonMarketConfig with token array

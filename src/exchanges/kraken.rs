@@ -1,7 +1,6 @@
-use crate::phoenix_utils::OracleRecv;
-use crate::{network_utils::get_time_ms, phoenix_utils::ExchangeUpdate};
+use crate::network_utils::get_time_ms;
 
-use super::ExchangeWebsocketHandler;
+use super::{ExchangeUpdate, ExchangeWebsocketHandler, OracleRecv};
 use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 
@@ -160,6 +159,7 @@ impl ExchangeWebsocketHandler for KrakenHandler {
                     .ok_or_else(|| anyhow!("No data in Kraken response"))?;
 
                 Ok(vec![ExchangeUpdate::Oracle(OracleRecv {
+                    exchange: "Kraken".to_string(),
                     bid: data.bid,
                     bid_size: data.bid_qty,
                     ask: data.ask,

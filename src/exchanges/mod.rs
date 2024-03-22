@@ -4,7 +4,7 @@ pub mod phoenix;
 pub mod phoenix_fill;
 
 use crate::network_utils::ConnectionStatus;
-use crate::phoenix_utils::ExchangeUpdate;
+use crate::phoenix_utils::{PhoenixFillRecv, PhoenixRecv};
 
 use std::str::FromStr;
 
@@ -20,6 +20,28 @@ use url::Url;
 
 use phoenix_sdk::sdk_client::SDKClient;
 use solana_sdk::pubkey::Pubkey;
+
+pub enum ExchangeUpdate {
+    Phoenix(PhoenixRecv),
+    PhoenixFill(PhoenixFillRecv),
+    Oracle(OracleRecv),
+}
+
+#[derive(Debug, Clone)]
+pub struct OracleRecv {
+    pub exchange: String,
+    pub bid: f64,
+    pub bid_size: f64,
+    pub ask: f64,
+    pub ask_size: f64,
+    pub timestamp_ms: u64,
+}
+
+impl OracleRecv {
+    pub fn midpoint(&self) -> f64 {
+        (self.bid + self.ask) / 2.0
+    }
+}
 
 pub trait ExchangeWebsocketHandler {
     type Confirmation: DeserializeOwned;

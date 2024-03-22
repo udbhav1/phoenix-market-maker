@@ -1,7 +1,10 @@
 extern crate phoenix_market_maker;
 
+use phoenix_market_maker::exchanges::{exchange_stream, ExchangeUpdate};
+#[allow(unused_imports)]
 use phoenix_market_maker::exchanges::{
-    exchange_stream, okx::OkxHandler, phoenix::PhoenixHandler, phoenix_fill::PhoenixFillHandler,
+    kraken::KrakenHandler, okx::OkxHandler, phoenix::PhoenixHandler,
+    phoenix_fill::PhoenixFillHandler,
 };
 use phoenix_market_maker::network_utils::{
     get_network, get_payer_keypair_from_path, get_solana_ws_url, ConnectionStatus,
@@ -10,8 +13,7 @@ use phoenix_market_maker::network_utils::{
 use phoenix_market_maker::network_utils::{get_time_ms, get_time_s};
 use phoenix_market_maker::phoenix_utils::{
     book_to_aggregated_levels, get_midpoint, get_quotes_from_width_and_lean, get_rwap,
-    send_trade_rpc, send_trade_tpu, setup_maker, symbols_to_market_address, ExchangeUpdate,
-    PhoenixFillRecv,
+    send_trade_rpc, send_trade_tpu, setup_maker, symbols_to_market_address, PhoenixFillRecv,
 };
 
 use clap::Parser;
@@ -198,7 +200,7 @@ async fn trading_logic(
         if orderbook_connected && fill_connected && oracle_connected && latest_oracle_bbo.is_some()
         // && latest_oracle_price.unwrap() != last_trade_opportunity_oracle_price
         {
-            let oracle_bbo = latest_oracle_bbo.unwrap();
+            let oracle_bbo = latest_oracle_bbo.clone().unwrap();
             let oracle_midpoint = oracle_bbo.midpoint();
 
             if let Some(phoenix_recv) = &latest_phoenix_book {

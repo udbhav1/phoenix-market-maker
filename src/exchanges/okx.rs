@@ -1,7 +1,6 @@
-use crate::phoenix_utils::OracleRecv;
-use crate::{network_utils::get_time_ms, phoenix_utils::ExchangeUpdate};
+use crate::network_utils::get_time_ms;
 
-use super::ExchangeWebsocketHandler;
+use super::{ExchangeUpdate, ExchangeWebsocketHandler, OracleRecv};
 use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 
@@ -114,6 +113,7 @@ impl ExchangeWebsocketHandler for OkxHandler {
             .ok_or_else(|| anyhow!("No data in Okx response"))?;
 
         Ok(vec![ExchangeUpdate::Oracle(OracleRecv {
+            exchange: "Okx".to_string(),
             bid: data.bidPx.parse()?,
             bid_size: data.bidSz.parse()?,
             ask: data.askPx.parse()?,

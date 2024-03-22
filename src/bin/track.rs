@@ -1,7 +1,10 @@
 extern crate phoenix_market_maker;
 
+use phoenix_market_maker::exchanges::{exchange_stream, ExchangeUpdate};
+#[allow(unused_imports)]
 use phoenix_market_maker::exchanges::{
-    exchange_stream, kraken::KrakenHandler, okx::OkxHandler, phoenix::PhoenixHandler,
+    kraken::KrakenHandler, okx::OkxHandler, phoenix::PhoenixHandler,
+    phoenix_fill::PhoenixFillHandler,
 };
 use phoenix_market_maker::network_utils::{
     get_network, get_payer_keypair_from_path, ConnectionStatus,
@@ -9,7 +12,7 @@ use phoenix_market_maker::network_utils::{
 #[allow(unused_imports)]
 use phoenix_market_maker::network_utils::{get_time_ms, get_time_s};
 use phoenix_market_maker::phoenix_utils::{
-    book_to_aggregated_levels, symbols_to_market_address, Book, ExchangeUpdate,
+    book_to_aggregated_levels, symbols_to_market_address, Book,
 };
 
 use clap::Parser;

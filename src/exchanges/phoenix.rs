@@ -1,7 +1,7 @@
 use crate::network_utils::{get_solana_ws_url, get_time_ms};
-use crate::phoenix_utils::{get_book_from_account_data, ExchangeUpdate, PhoenixRecv};
+use crate::phoenix_utils::{get_book_from_account_data, PhoenixRecv};
 
-use super::ExchangeWebsocketHandler;
+use super::{ExchangeUpdate, ExchangeWebsocketHandler};
 use std::env;
 
 use anyhow::Context;
