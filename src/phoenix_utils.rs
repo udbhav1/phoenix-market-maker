@@ -27,17 +27,31 @@ use solana_sdk::{
 
 pub type Book = Orderbook<FIFOOrderId, PhoenixOrder>;
 
+pub enum BookUpdate {
+    Phoenix(PhoenixRecv),
+    Oracle(OracleRecv),
+}
+
 #[derive(Debug, Clone)]
-pub struct BookRecv {
+pub struct PhoenixRecv {
     pub book: Book,
     pub timestamp_ms: u64,
     pub slot: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct OracleRecv {
-    pub price: f64,
+    pub bid: f64,
+    pub bid_size: f64,
+    pub ask: f64,
+    pub ask_size: f64,
     pub timestamp_ms: u64,
+}
+
+impl OracleRecv {
+    pub fn midpoint(&self) -> f64 {
+        (self.bid + self.ask) / 2.0
+    }
 }
 
 #[derive(Debug, Clone)]

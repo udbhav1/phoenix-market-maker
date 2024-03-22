@@ -1,31 +1,26 @@
 extern crate phoenix_market_maker;
+
+use phoenix_market_maker::exchanges::{exchange_stream, okx::OkxHandler, phoenix::PhoenixHandler};
 use phoenix_market_maker::network_utils::{
-    get_network, get_payer_keypair_from_path, get_time_ms, get_ws_url,
-    AccountSubscribeConfirmation, AccountSubscribeResponse, ConnectionStatus,
-    OkxSubscribeConfirmation, OkxSubscribeResponse, ACCOUNT_SUBSCRIBE_JSON, OKX_SUBSCRIBE_JSON,
-    OKX_WS_URL,
+    get_network, get_payer_keypair_from_path, ConnectionStatus,
 };
+#[allow(unused_imports)]
+use phoenix_market_maker::network_utils::{get_time_ms, get_time_s};
 use phoenix_market_maker::phoenix_utils::{
-    book_to_aggregated_levels, get_book_from_account_data, get_ladder, symbols_to_market_address,
-    Book, BookRecv, OracleRecv,
+    book_to_aggregated_levels, symbols_to_market_address, Book, BookUpdate,
 };
 
-use anyhow::{anyhow, Context};
 use clap::Parser;
 use csv::Writer;
-use futures::{SinkExt, StreamExt};
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::str::FromStr;
-use tokio::sync::mpsc::{self, Sender};
-use tokio::time::{sleep, Duration};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio::sync::mpsc::{self};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use url::Url;
 
 use phoenix_sdk::sdk_client::SDKClient;
 use solana_cli_config::{Config, CONFIG_FILE};
@@ -100,249 +95,58 @@ fn process_book_and_oracle_price(
     Ok(())
 }
 
-async fn handle_orderbook_stream(
-    url: Url,
-    subscribe_msg: Message,
-    tx: Sender<BookRecv>,
-    status_tx: Sender<ConnectionStatus>,
-) -> anyhow::Result<()> {
-    let (ws_stream, _) = connect_async(url).await?;
-    info!("Connected to orderbook websocket");
-    status_tx.send(ConnectionStatus::Connected).await?;
-
-    let (mut write, read) = ws_stream.split();
-    let mut fused_read = read.fuse();
-    write.send(subscribe_msg.clone()).await?;
-
-    let mut is_first_message = true;
-    let mut i = 1;
-    while let Some(message) = fused_read.next().await {
-        match message {
-            Ok(msg) => match msg {
-                Message::Text(s) => {
-                    if is_first_message {
-                        let confirmation: AccountSubscribeConfirmation = serde_json::from_str(&s)
-                            .with_context(|| {
-                            format!(
-                                "Failed to deserialize account subscribe confirmation: {}",
-                                s
-                            )
-                        })?;
-                        debug!("Subscription confirmed with ID: {}", confirmation.result);
-                        is_first_message = false;
-                    } else {
-                        let recv_ts = get_time_ms()?;
-                        info!("Received book #{}", i);
-                        i += 1;
-
-                        let parsed: AccountSubscribeResponse = serde_json::from_str(&s)?;
-
-                        let orderbook =
-                            get_book_from_account_data(parsed.params.result.value.data)?;
-
-                        let slot = parsed.params.result.context.slot;
-
-                        let precision: usize = env::var("TRACK_BOOK_PRECISION")?.parse()?;
-                        let ladder_str = get_ladder(&orderbook, 5, precision);
-                        debug!("Market Ladder:\n{}", ladder_str);
-
-                        tx.send(BookRecv {
-                            book: orderbook,
-                            timestamp_ms: recv_ts,
-                            slot,
-                        })
-                        .await?;
-                    }
-                }
-                _ => {}
-            },
-            Err(e) => return Err(anyhow!(e)),
-        }
-    }
-
-    Ok(())
-}
-
-async fn orderbook_stream(
-    tx: Sender<BookRecv>,
-    status_tx: Sender<ConnectionStatus>,
-    ws_url: &str,
-    market_address: &str,
-) -> anyhow::Result<()> {
-    let url = Url::from_str(ws_url).expect("Failed to parse websocket url");
-    let subscribe_msg = Message::Text(ACCOUNT_SUBSCRIBE_JSON.replace("{1}", market_address));
-    let sleep_time: u64 = env::var("TRACK_SLEEP_SEC_BETWEEN_WS_CONNECT")?.parse()?;
-
-    let max_disconnects: usize = env::var("TRACK_DISCONNECTS_BEFORE_EXIT")?.parse()?;
-    let mut disconnects = 0;
-
-    loop {
-        if let Err(e) = handle_orderbook_stream(
-            url.clone(),
-            subscribe_msg.clone(),
-            tx.clone(),
-            status_tx.clone(),
-        )
-        .await
-        {
-            status_tx.send(ConnectionStatus::Disconnected).await?;
-
-            warn!("Orderbook websocket disconnected with error: {:?}", e);
-            disconnects += 1;
-            if disconnects >= max_disconnects {
-                error!("Exceeded max disconnects, exiting...");
-                return Err(anyhow!(
-                    "Orderbook websocket experienced {} disconnections, not trying again",
-                    max_disconnects
-                ));
-            }
-
-            info!("Reconnect attempt #{}...", disconnects + 1);
-            sleep(Duration::from_secs(sleep_time)).await;
-        }
-    }
-}
-
-async fn handle_okx_stream(
-    url: Url,
-    subscribe_msg: Message,
-    tx: Sender<OracleRecv>,
-    status_tx: Sender<ConnectionStatus>,
-) -> anyhow::Result<()> {
-    let (ws_stream, _) = connect_async(url).await?;
-    info!("Connected to okx websocket");
-    status_tx.send(ConnectionStatus::Connected).await?;
-
-    let (mut write, read) = ws_stream.split();
-    let mut fused_read = read.fuse();
-    write.send(subscribe_msg.clone()).await?;
-
-    let mut is_first_message = true;
-    let mut i = 1;
-    while let Some(message) = fused_read.next().await {
-        match message {
-            Ok(msg) => match msg {
-                Message::Text(s) => {
-                    if is_first_message {
-                        let confirmation: OkxSubscribeConfirmation = serde_json::from_str(&s)
-                            .with_context(|| {
-                                format!("Failed to deserialize okx subscribe confirmation: {}", s)
-                            })?;
-                        debug!("Subscription confirmed with ID: {}", confirmation.connId);
-                        is_first_message = false;
-                    } else {
-                        let recv_ts = get_time_ms()?;
-                        info!("Received okx price #{}", i);
-                        i += 1;
-
-                        let parsed: OkxSubscribeResponse = serde_json::from_str(&s)?;
-                        let mark_price: f64 = parsed.data[0].markPx.parse()?;
-                        debug!("Okx mark price: {}", mark_price);
-
-                        tx.send(OracleRecv {
-                            price: mark_price,
-                            timestamp_ms: recv_ts,
-                        })
-                        .await?;
-                    }
-                }
-                _ => {
-                    info!("Received non-text message: {:?}", msg);
-                }
-            },
-            Err(e) => return Err(anyhow!(e)),
-        }
-    }
-
-    Ok(())
-}
-
-async fn okx_stream(
-    tx: Sender<OracleRecv>,
-    status_tx: Sender<ConnectionStatus>,
-    ws_url: &str,
-    instrument_id: &str,
-) -> anyhow::Result<()> {
-    let url = Url::from_str(ws_url).expect("Failed to parse websocket url");
-    let subscribe_msg = Message::Text(OKX_SUBSCRIBE_JSON.replace("{1}", instrument_id));
-    let sleep_time: u64 = env::var("TRACK_SLEEP_SEC_BETWEEN_WS_CONNECT")?.parse()?;
-
-    let max_disconnects: usize = env::var("TRACK_DISCONNECTS_BEFORE_EXIT")?.parse()?;
-    let mut disconnects = 0;
-
-    loop {
-        if let Err(e) = handle_okx_stream(
-            url.clone(),
-            subscribe_msg.clone(),
-            tx.clone(),
-            status_tx.clone(),
-        )
-        .await
-        {
-            status_tx.send(ConnectionStatus::Disconnected).await?;
-
-            warn!("Okx websocket disconnected with error: {:?}", e);
-            disconnects += 1;
-            if disconnects >= max_disconnects {
-                error!("Exceeded max disconnects, exiting...");
-                return Err(anyhow!(
-                    "Okx websocket experienced {} disconnections, not trying again",
-                    max_disconnects
-                ));
-            }
-
-            info!("Reconnect attempt #{}...", disconnects + 1);
-            sleep(Duration::from_secs(sleep_time)).await;
-        }
-    }
-}
-
 async fn track(
-    mut orderbook_rx: mpsc::Receiver<BookRecv>,
-    mut oracle_rx: mpsc::Receiver<OracleRecv>,
-    mut orderbook_status_rx: mpsc::Receiver<ConnectionStatus>,
+    mut phoenix_rx: mpsc::Receiver<BookUpdate>,
+    mut oracle_rx: mpsc::Receiver<BookUpdate>,
+    mut phoenix_status_rx: mpsc::Receiver<ConnectionStatus>,
     mut oracle_status_rx: mpsc::Receiver<ConnectionStatus>,
     oracle_enabled: bool,
     mut csv_writer: Option<&mut Writer<File>>,
 ) -> anyhow::Result<()> {
-    let mut orderbook_connected = false;
+    let mut phoenix_connected = false;
     let mut oracle_connected = false;
 
-    let mut latest_orderbook = None;
-    let mut latest_oracle_price = None;
+    let mut latest_phoenix_book = None;
+    let mut latest_oracle_bbo = None;
 
     loop {
         let writer_ref = csv_writer.as_mut().map(|w| &mut **w);
 
         tokio::select! {
-            Some(orderbook) = orderbook_rx.recv() => {
-                latest_orderbook = Some(orderbook);
+            Some(phoenix_update) = phoenix_rx.recv() => {
+                latest_phoenix_book = match phoenix_update {
+                    BookUpdate::Phoenix(phoenix_recv) => Some(phoenix_recv),
+                    _ => panic!("Received non-Phoenix update in Phoenix channel")
+                };
             },
-            Some(mark_price) = oracle_rx.recv() => {
-                latest_oracle_price = Some(mark_price);
+            Some(oracle_update) = oracle_rx.recv() => {
+                latest_oracle_bbo = match oracle_update {
+                    BookUpdate::Oracle(oracle_recv) => Some(oracle_recv),
+                    _ => panic!("Received non-oracle update in oracle channel")
+                };
             },
-            Some(status) = orderbook_status_rx.recv() => {
-                orderbook_connected = matches!(status, ConnectionStatus::Connected);
+            Some(status) = phoenix_status_rx.recv() => {
+                phoenix_connected = matches!(status, ConnectionStatus::Connected);
             },
             Some(status) = oracle_status_rx.recv() => {
                 oracle_connected = matches!(status, ConnectionStatus::Connected);
             },
         }
 
-        if orderbook_connected {
+        if phoenix_connected {
             if oracle_enabled {
-                if let (Some(book_recv), Some(oracle_recv)) =
-                    (&latest_orderbook, &latest_oracle_price)
+                if let (Some(phoenix_recv), Some(oracle_recv)) =
+                    (&latest_phoenix_book, &latest_oracle_bbo)
                 {
                     process_book_and_oracle_price(
-                        &book_recv.book,
-                        Some(oracle_recv.price),
-                        std::cmp::max(book_recv.timestamp_ms, oracle_recv.timestamp_ms),
+                        &phoenix_recv.book,
+                        Some(oracle_recv.midpoint()),
+                        std::cmp::max(phoenix_recv.timestamp_ms, oracle_recv.timestamp_ms),
                         writer_ref,
                     )?;
                 }
             } else {
-                if let Some(book_recv) = &latest_orderbook {
+                if let Some(book_recv) = &latest_phoenix_book {
                     process_book_and_oracle_price(
                         &book_recv.book,
                         None,
@@ -352,7 +156,7 @@ async fn track(
                 }
             }
         } else {
-            if !orderbook_connected {
+            if !phoenix_connected {
                 warn!("Orderbook stream not connected");
             }
             if oracle_enabled && !oracle_connected {
@@ -364,10 +168,6 @@ async fn track(
 
 #[derive(Parser)]
 struct Args {
-    /// RPC endpoint: devnet, mainnet, helius_devnet, helius_mainnet, etc.
-    #[clap(short, long)]
-    url: Option<String>,
-
     /// Case insensitive: sol, bonk, jto, jup, etc.
     #[clap(short, long)]
     base_symbol: String,
@@ -397,8 +197,11 @@ struct Args {
 pub async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv()?;
 
+    let rpc_network = env::var("RPC_NETWORK")?;
     let api_key = env::var("HELIUS_API_KEY")?;
     let log_level = env::var("TRACK_LOG_LEVEL")?;
+    let sleep_sec_between_ws_connect = env::var("TRACK_SLEEP_SEC_BETWEEN_WS_CONNECT")?.parse()?;
+    let disconnects_before_exit = env::var("TRACK_DISCONNECTS_BEFORE_EXIT")?.parse()?;
 
     let args = Args::parse();
 
@@ -429,8 +232,7 @@ pub async fn main() -> anyhow::Result<()> {
         None => Config::default(),
     };
     let trader = get_payer_keypair_from_path(&args.keypair_path.unwrap_or(config.keypair_path))?;
-    let provided_network = args.url.clone().unwrap_or(config.json_rpc_url);
-    let network_url = &get_network(&provided_network, &api_key)?.to_string();
+    let network_url = &get_network(&rpc_network, &api_key)?.to_string();
 
     let mut sdk = SDKClient::new(&trader, network_url).await?;
 
@@ -473,39 +275,53 @@ pub async fn main() -> anyhow::Result<()> {
         None
     };
 
-    let (orderbook_tx, orderbook_rx) = mpsc::channel(32);
-    let (orderbook_status_tx, orderbook_status_rx) = mpsc::channel(32);
+    let (phoenix_tx, phoenix_rx) = mpsc::channel(256);
+    let (phoenix_status_tx, phoenix_status_rx) = mpsc::channel(16);
 
-    let (okx_tx, okx_rx) = mpsc::channel(512);
-    let (okx_status_tx, okx_status_rx) = mpsc::channel(32);
+    let (oracle_tx, oracle_rx) = mpsc::channel(512);
+    let (oracle_status_tx, oracle_status_rx) = mpsc::channel(16);
 
-    let ws_url = get_ws_url(&provided_network, &api_key)?;
+    let base_symbol1 = base_symbol.clone();
+    let quote_symbol1 = quote_symbol.clone();
+    let market_address1 = market_address.clone();
+    let base_symbol2 = base_symbol.clone();
+    let quote_symbol2 = quote_symbol.clone();
 
     tokio::spawn(async move {
-        orderbook_stream(
-            orderbook_tx,
-            orderbook_status_tx,
-            &ws_url.clone(),
-            &market_address,
+        exchange_stream::<PhoenixHandler>(
+            phoenix_tx,
+            phoenix_status_tx,
+            &base_symbol1,
+            &quote_symbol1,
+            Some(market_address1),
+            sleep_sec_between_ws_connect,
+            disconnects_before_exit,
         )
         .await
-        .unwrap();
+        .unwrap()
     });
 
     if args.oracle {
-        let okx_instrument = format!("{}-USDT-SWAP", base_symbol.to_uppercase());
         tokio::spawn(async move {
-            okx_stream(okx_tx, okx_status_tx, &OKX_WS_URL, &okx_instrument)
-                .await
-                .unwrap();
+            exchange_stream::<OkxHandler>(
+                oracle_tx,
+                oracle_status_tx,
+                &base_symbol2,
+                &quote_symbol2,
+                None,
+                sleep_sec_between_ws_connect,
+                disconnects_before_exit,
+            )
+            .await
+            .unwrap();
         });
     }
 
     track(
-        orderbook_rx,
-        okx_rx,
-        orderbook_status_rx,
-        okx_status_rx,
+        phoenix_rx,
+        oracle_rx,
+        phoenix_status_rx,
+        oracle_status_rx,
         args.oracle,
         csv_writer.as_mut(),
     )

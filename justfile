@@ -1,14 +1,14 @@
 # track BASE/QUOTE pair, dumping books to CSV_NAME and logs to LOG_NAME
 track BASE QUOTE CSV_NAME LOG_NAME:
-    RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin track -- --url helius_mainnet -b {{BASE}} -q {{QUOTE}} -o data/{{CSV_NAME}}.csv -l logs/{{LOG_NAME}}.log
+    RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin track -- -b {{BASE}} -q {{QUOTE}} -o data/{{CSV_NAME}}.csv -l logs/{{LOG_NAME}}.log
 
 # track BASE/QUOTE pair and oracle, dumping books to CSV_NAME and logs to LOG_NAME
 track-oracle BASE QUOTE CSV_NAME LOG_NAME:
-    RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin track -- --url helius_mainnet -b {{BASE}} -q {{QUOTE}} --oracle -o data/{{CSV_NAME}}.csv -l logs/{{LOG_NAME}}.log
+    RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin track -- -b {{BASE}} -q {{QUOTE}} --oracle -o data/{{CSV_NAME}}.csv -l logs/{{LOG_NAME}}.log
 
 # setup and quote BASE/QUOTE pair, dumping books to CSV_NAME and logs to LOG_NAME
 trade BASE QUOTE CSV_NAME LOG_NAME KEYPAIR:
-    RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin trade -- --url helius_mainnet -b {{BASE}} -q {{QUOTE}} -o trades/{{CSV_NAME}}.csv -l logs/{{LOG_NAME}}.log -k {{KEYPAIR}}
+    RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin trade -- -b {{BASE}} -q {{QUOTE}} -o trades/{{CSV_NAME}}.csv -l logs/{{LOG_NAME}}.log -k {{KEYPAIR}}
 
 # print file sizes of data/, logs/, trades/
 du:

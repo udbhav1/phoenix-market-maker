@@ -3,22 +3,6 @@ use serde::{Deserialize, Serialize};
 use solana_sdk::signature::{read_keypair_file, Keypair};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const OKX_WS_URL: &str = "wss://wsaws.okx.com:8443/ws/v5/public";
-
-pub const ACCOUNT_SUBSCRIBE_JSON: &str = r#"
-{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "accountSubscribe",
-    "params": [
-        "{1}",
-        {
-            "encoding": "base64+zstd",
-            "commitment": "confirmed"
-        }
-    ]
-}"#;
-
 pub const TRANSACTION_SUBSCRIBE_JSON: &str = r#"
 {
     "jsonrpc": "2.0",
@@ -40,62 +24,9 @@ pub const TRANSACTION_SUBSCRIBE_JSON: &str = r#"
     ]
 }"#;
 
-pub const OKX_SUBSCRIBE_JSON: &str = r#"
-{
-    "op": "subscribe",
-    "args": [
-        {
-            "channel": "mark-price",
-            "instId": "{1}"
-        }
-    ]
-}"#;
-
 pub enum ConnectionStatus {
     Connected,
     Disconnected,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct AccountSubscribeConfirmation {
-    pub jsonrpc: String,
-    pub result: u64,
-    pub id: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct AccountSubscribeResponse {
-    pub jsonrpc: String,
-    pub method: String,
-    pub params: AccountSubscribeParams,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct AccountSubscribeParams {
-    pub result: AccountSubscribeParamsResult,
-    pub subscription: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct AccountSubscribeParamsResult {
-    pub context: AccountSubscribeParamsResultContext,
-    pub value: AccountSubscribeParamsResultValue,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct AccountSubscribeParamsResultContext {
-    pub slot: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[allow(non_snake_case)]
-pub struct AccountSubscribeParamsResultValue {
-    pub lamports: u64,
-    pub data: Vec<String>,
-    pub owner: String,
-    pub executable: bool,
-    pub rentEpoch: u64,
-    pub space: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -120,36 +51,6 @@ pub struct TransactionSubscribeParamsResult {
     pub signature: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[allow(non_snake_case)]
-pub struct OkxSubscribeConfirmation {
-    pub event: String,
-    pub arg: OkxSubscribeArg,
-    pub connId: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[allow(non_snake_case)]
-pub struct OkxSubscribeArg {
-    pub channel: String,
-    pub instId: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct OkxSubscribeResponse {
-    pub arg: OkxSubscribeArg,
-    pub data: Vec<OkxSubscribeData>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[allow(non_snake_case)]
-pub struct OkxSubscribeData {
-    pub instId: String,
-    pub instType: String,
-    pub markPx: String,
-    pub ts: String,
-}
-
 pub fn get_payer_keypair_from_path(path: &str) -> anyhow::Result<Keypair> {
     read_keypair_file(&*shellexpand::tilde(path)).map_err(|e| anyhow!(e.to_string()))
 }
@@ -172,7 +73,7 @@ pub fn get_network(network_str: &str, api_key: &str) -> anyhow::Result<String> {
     }
 }
 
-pub fn get_ws_url(network_str: &str, api_key: &str) -> anyhow::Result<String> {
+pub fn get_solana_ws_url(network_str: &str, api_key: &str) -> anyhow::Result<String> {
     match network_str {
         "helius_mainnet" => Ok(format!("wss://mainnet.helius-rpc.com/?api-key={}", api_key)),
         "helius_devnet" => Ok(format!("wss://devnet.helius-rpc.com/?api-key={}", api_key)),
@@ -180,7 +81,7 @@ pub fn get_ws_url(network_str: &str, api_key: &str) -> anyhow::Result<String> {
     }
 }
 
-pub fn get_enhanced_ws_url(network_str: &str, api_key: &str) -> anyhow::Result<String> {
+pub fn get_solana_enhanced_ws_url(network_str: &str, api_key: &str) -> anyhow::Result<String> {
     match network_str {
         "helius_mainnet" => Ok(format!(
             "wss://atlas-mainnet.helius-rpc.com?api-key={}",
