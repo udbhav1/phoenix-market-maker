@@ -71,6 +71,10 @@ impl ExchangeWebsocketHandler for PhoenixFillHandler {
         get_solana_enhanced_ws_url(&network_str, &api_key).unwrap()
     }
 
+    fn get_num_confirmation_messages() -> usize {
+        1
+    }
+
     fn get_subscribe_json(
         _base_symbol: &str,
         _quote_symbol: &str,

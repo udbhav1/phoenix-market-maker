@@ -77,6 +77,10 @@ impl ExchangeWebsocketHandler for OkxHandler {
         WS_URL.to_string()
     }
 
+    fn get_num_confirmation_messages() -> usize {
+        1
+    }
+
     fn get_subscribe_json(
         base_symbol: &str,
         quote_symbol: &str,

@@ -1,6 +1,8 @@
 extern crate phoenix_market_maker;
 
-use phoenix_market_maker::exchanges::{exchange_stream, okx::OkxHandler, phoenix::PhoenixHandler};
+use phoenix_market_maker::exchanges::{
+    exchange_stream, kraken::KrakenHandler, okx::OkxHandler, phoenix::PhoenixHandler,
+};
 use phoenix_market_maker::network_utils::{
     get_network, get_payer_keypair_from_path, ConnectionStatus,
 };
@@ -305,7 +307,7 @@ pub async fn main() -> anyhow::Result<()> {
 
     if args.oracle {
         tokio::spawn(async move {
-            exchange_stream::<OkxHandler>(
+            exchange_stream::<KrakenHandler>(
                 oracle_tx,
                 oracle_status_tx,
                 &base_symbol2,

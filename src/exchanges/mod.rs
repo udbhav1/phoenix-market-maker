@@ -1,3 +1,4 @@
+pub mod kraken;
 pub mod okx;
 pub mod phoenix;
 pub mod phoenix_fill;
@@ -28,6 +29,8 @@ pub trait ExchangeWebsocketHandler {
 
     fn get_ws_url() -> String;
 
+    fn get_num_confirmation_messages() -> usize;
+
     fn get_subscribe_json(
         base_symbol: &str,
         quote_symbol: &str,
@@ -54,6 +57,7 @@ async fn handle_exchange_stream<Exchange: ExchangeWebsocketHandler>(
     sdk: Option<&SDKClient>,
 ) -> anyhow::Result<()> {
     let exchange_name = Exchange::get_name();
+    let num_confirmation_messages = Exchange::get_num_confirmation_messages();
 
     let (ws_stream, _) = connect_async(url).await?;
     info!("Connected to {} websocket", exchange_name);
@@ -63,19 +67,16 @@ async fn handle_exchange_stream<Exchange: ExchangeWebsocketHandler>(
     let mut fused_read = read.fuse();
     write.send(subscribe_msg.clone()).await?;
 
-    let mut is_first_message = true;
     let mut i = 1;
     while let Some(message) = fused_read.next().await {
         match message {
             Ok(msg) => match msg {
                 Message::Text(s) => {
-                    if is_first_message {
+                    if i <= num_confirmation_messages {
                         let id = Exchange::parse_confirmation(&s).await?;
                         debug!("{} subscription confirmed with ID: {}", exchange_name, id);
-                        is_first_message = false;
                     } else {
                         info!("Received {} update #{}", exchange_name, i);
-                        i += 1;
 
                         let parsed_updates =
                             Exchange::parse_response(&s, trader_pubkey, sdk).await?;
@@ -83,6 +84,7 @@ async fn handle_exchange_stream<Exchange: ExchangeWebsocketHandler>(
                             tx.send(update).await?;
                         }
                     }
+                    i += 1;
                 }
                 _ => {
                     info!(
