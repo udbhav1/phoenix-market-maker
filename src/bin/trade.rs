@@ -1,36 +1,33 @@
 extern crate phoenix_market_maker;
 
-use phoenix_market_maker::exchanges::{exchange_stream, okx::OkxHandler, phoenix::PhoenixHandler};
+use phoenix_market_maker::exchanges::{
+    exchange_stream, okx::OkxHandler, phoenix::PhoenixHandler, phoenix_fill::PhoenixFillHandler,
+};
 use phoenix_market_maker::network_utils::{
-    get_network, get_payer_keypair_from_path, get_solana_enhanced_ws_url, get_solana_ws_url,
-    ConnectionStatus, TransactionSubscribeConfirmation, TransactionSubscribeResponse,
-    TRANSACTION_SUBSCRIBE_JSON,
+    get_network, get_payer_keypair_from_path, get_solana_ws_url, ConnectionStatus,
 };
 #[allow(unused_imports)]
 use phoenix_market_maker::network_utils::{get_time_ms, get_time_s};
 use phoenix_market_maker::phoenix_utils::{
     book_to_aggregated_levels, get_midpoint, get_quotes_from_width_and_lean, get_rwap,
-    send_trade_rpc, send_trade_tpu, setup_maker, symbols_to_market_address, BookUpdate, Fill,
+    send_trade_rpc, send_trade_tpu, setup_maker, symbols_to_market_address, ExchangeUpdate,
+    PhoenixFillRecv,
 };
 
-use anyhow::{anyhow, Context};
 use clap::Parser;
 use csv::Writer;
-use futures::{SinkExt, StreamExt};
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::mpsc::{self, Sender};
-use tokio::time::{sleep, Duration};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio::sync::mpsc;
+use tokio::time::Duration;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use url::Url;
 
 use phoenix::program::new_order::{
     CondensedOrder, FailedMultipleLimitOrderBehavior, MultipleOrderPacket,
@@ -39,13 +36,12 @@ use phoenix::program::{
     create_cancel_all_order_with_free_funds_instruction, create_new_multiple_order_instruction,
 };
 use phoenix::state::Side;
-use phoenix_sdk::sdk_client::{MarketEventDetails, SDKClient};
+use phoenix_sdk::sdk_client::SDKClient;
 use solana_cli_config::{Config, CONFIG_FILE};
 use solana_client::rpc_client::RpcClient;
 use solana_client::tpu_client::{TpuClient, TpuClientConfig};
 use solana_sdk::{
-    commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Keypair, signature::Signature,
-    signer::Signer,
+    commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Keypair, signer::Signer,
 };
 
 fn generate_csv_columns() -> Vec<String> {
@@ -61,7 +57,7 @@ fn generate_csv_columns() -> Vec<String> {
     ]
 }
 
-fn generate_csv_row(fill: &Fill) -> Vec<String> {
+fn generate_csv_row(fill: &PhoenixFillRecv) -> Vec<String> {
     let side = match fill.side {
         Side::Bid => "buy",
         Side::Ask => "sell",
@@ -78,128 +74,10 @@ fn generate_csv_row(fill: &Fill) -> Vec<String> {
     ]
 }
 
-async fn handle_fill_stream(
-    url: Url,
-    subscribe_msg: Message,
-    trader_pubkey: Pubkey,
-    tx: Sender<Fill>,
-    status_tx: Sender<ConnectionStatus>,
-    sdk: &SDKClient,
-) -> anyhow::Result<()> {
-    let (ws_stream, _) = connect_async(url).await?;
-    info!("Connected to fill websocket");
-    status_tx.send(ConnectionStatus::Connected).await?;
-
-    let (mut write, read) = ws_stream.split();
-    let mut fused_read = read.fuse();
-    write.send(subscribe_msg.clone()).await?;
-
-    let mut is_first_message = true;
-    while let Some(message) = fused_read.next().await {
-        match message {
-            Ok(msg) => match msg {
-                Message::Text(s) => {
-                    if is_first_message {
-                        let confirmation: TransactionSubscribeConfirmation =
-                            serde_json::from_str(&s).with_context(|| {
-                                format!(
-                                    "Failed to deserialize transaction subscribe confirmation: {}",
-                                    s
-                                )
-                            })?;
-                        debug!("Subscription confirmed with ID: {}", confirmation.result);
-                        is_first_message = false;
-                    } else {
-                        let parsed: TransactionSubscribeResponse = serde_json::from_str(&s)?;
-                        let signature_str = parsed.params.result.signature;
-
-                        let start = Instant::now();
-                        let events = sdk.parse_fills(&Signature::from_str(&signature_str)?).await;
-                        let elapsed = start.elapsed();
-                        debug!(
-                            "phoenix_sdk::sdk_client::parse_fills took {}ms",
-                            elapsed.as_millis()
-                        );
-
-                        for event in events {
-                            match event.details {
-                                MarketEventDetails::Fill(f) => {
-                                    if f.maker == trader_pubkey || f.taker == trader_pubkey {
-                                        let fill = Fill {
-                                            price: f.price_in_ticks,
-                                            size: f.base_lots_filled,
-                                            side: f.side_filled,
-                                            maker: f.maker.to_string(),
-                                            taker: f.taker.to_string(),
-                                            slot: event.slot,
-                                            timestamp: event.timestamp,
-                                            signature: signature_str.clone(),
-                                        };
-                                        tx.send(fill).await?;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            },
-            Err(e) => return Err(anyhow!(e)),
-        }
-    }
-
-    Ok(())
-}
-
-async fn fill_stream(
-    tx: Sender<Fill>,
-    status_tx: Sender<ConnectionStatus>,
-    ws_url: &str,
-    market_address: &str,
-    trader_pubkey: Pubkey,
-    sdk: &SDKClient,
-) -> anyhow::Result<()> {
-    let url = Url::from_str(ws_url).expect("Failed to parse websocket url");
-    let subscribe_msg = Message::Text(TRANSACTION_SUBSCRIBE_JSON.replace("{1}", market_address));
-    let sleep_time: u64 = env::var("TRADE_SLEEP_SEC_BETWEEN_WS_CONNECT")?.parse()?;
-
-    let max_disconnects: usize = env::var("TRADE_DISCONNECTS_BEFORE_EXIT")?.parse()?;
-    let mut disconnects = 0;
-
-    loop {
-        if let Err(e) = handle_fill_stream(
-            url.clone(),
-            subscribe_msg.clone(),
-            trader_pubkey,
-            tx.clone(),
-            status_tx.clone(),
-            &sdk,
-        )
-        .await
-        {
-            status_tx.send(ConnectionStatus::Disconnected).await?;
-
-            warn!("Fill websocket disconnected with error: {:?}", e);
-            disconnects += 1;
-            if disconnects >= max_disconnects {
-                error!("Exceeded max disconnects, exiting...");
-                return Err(anyhow!(
-                    "Fill websocket experienced {} disconnections, not trying again",
-                    max_disconnects
-                ));
-            }
-
-            info!("Reconnect attempt #{}...", disconnects + 1);
-            sleep(Duration::from_secs(sleep_time)).await;
-        }
-    }
-}
-
 async fn trading_logic(
-    mut phoenix_rx: mpsc::Receiver<BookUpdate>,
-    mut fill_rx: mpsc::Receiver<Fill>,
-    mut oracle_rx: mpsc::Receiver<BookUpdate>,
+    mut phoenix_rx: mpsc::Receiver<ExchangeUpdate>,
+    mut fill_rx: mpsc::Receiver<ExchangeUpdate>,
+    mut oracle_rx: mpsc::Receiver<ExchangeUpdate>,
     mut phoenix_status_rx: mpsc::Receiver<ConnectionStatus>,
     mut fill_status_rx: mpsc::Receiver<ConnectionStatus>,
     mut oracle_status_rx: mpsc::Receiver<ConnectionStatus>,
@@ -247,11 +125,15 @@ async fn trading_logic(
                 }
 
                 latest_phoenix_book = match recv_orderbook.unwrap() {
-                    BookUpdate::Phoenix(book) => Some(book),
+                    ExchangeUpdate::Phoenix(book) => Some(book),
                     _ => panic!("Received non-Phoenix book update in Phoenix channel")
                 };
             },
             Some(fill) = fill_rx.recv() => {
+                let fill = match fill {
+                    ExchangeUpdate::PhoenixFill(fill) => fill,
+                    _ => panic!("Received non-Fill update in Fill channel")
+                };
                 let mut my_side = fill.side;
                 if fill.taker == trader_keypair.pubkey().to_string() {
                     my_side = my_side.opposite();
@@ -266,7 +148,7 @@ async fn trading_logic(
 
                 match csv_writer {
                     Some(ref mut w) => {
-                        let row = generate_csv_row(&Fill {
+                        let row = generate_csv_row(&PhoenixFillRecv {
                             side: my_side,
                             ..fill
                         });
@@ -290,7 +172,7 @@ async fn trading_logic(
                 }
 
                 latest_oracle_bbo = match recv_oracle.unwrap() {
-                    BookUpdate::Oracle(bbo) => Some(bbo),
+                    ExchangeUpdate::Oracle(bbo) => Some(bbo),
                     _ => panic!("Received non-oracle book update in oracle channel")
                 };
             },
@@ -502,7 +384,7 @@ pub async fn main() -> anyhow::Result<()> {
         CommitmentConfig::confirmed(),
     );
 
-    // both trading_logic() and fill_stream() need this and its not cloneable
+    // both trading_logic() and the fill exchange stream need this and its not cloneable
     let mut sdk1 = SDKClient::new(&trader, &network_url).await?;
     let mut sdk2 = SDKClient::new(&trader, &network_url).await?;
 
@@ -565,7 +447,6 @@ pub async fn main() -> anyhow::Result<()> {
     info!("Time to get blockhash: {:?}", end.duration_since(start));
 
     let ws_url = get_solana_ws_url(&rpc_network, &api_key)?;
-    let enhanced_ws_url = get_solana_enhanced_ws_url(&rpc_network, &api_key)?;
 
     let rpc_for_tpu = RpcClient::new_with_timeout_and_commitment(
         network_url.clone(),
@@ -589,13 +470,14 @@ pub async fn main() -> anyhow::Result<()> {
 
     // move blocks take ownership so have to clone before
     let trader_pubkey = trader.pubkey();
-
     let base_symbol1 = base_symbol.clone();
     let quote_symbol1 = quote_symbol.clone();
     let market_address1 = market_address.clone();
     let base_symbol2 = base_symbol.clone();
     let quote_symbol2 = quote_symbol.clone();
     let market_address2 = market_address.clone();
+    let base_symbol3 = base_symbol.clone();
+    let quote_symbol3 = quote_symbol.clone();
 
     tokio::spawn(async move {
         exchange_stream::<PhoenixHandler>(
@@ -604,6 +486,8 @@ pub async fn main() -> anyhow::Result<()> {
             &base_symbol1,
             &quote_symbol1,
             Some(market_address1),
+            None,
+            None,
             sleep_sec_between_ws_connect,
             disconnects_before_exit,
         )
@@ -612,24 +496,29 @@ pub async fn main() -> anyhow::Result<()> {
     });
 
     tokio::spawn(async move {
-        fill_stream(
+        exchange_stream::<PhoenixFillHandler>(
             fill_tx,
             fill_status_tx,
-            &enhanced_ws_url,
-            &market_address2,
-            trader_pubkey,
-            &sdk2,
+            &base_symbol2,
+            &quote_symbol2,
+            Some(market_address2),
+            Some(trader_pubkey),
+            Some(&sdk1),
+            sleep_sec_between_ws_connect,
+            disconnects_before_exit,
         )
         .await
-        .unwrap();
+        .unwrap()
     });
 
     tokio::spawn(async move {
         exchange_stream::<OkxHandler>(
             oracle_tx,
             oracle_status_tx,
-            &base_symbol2,
-            &quote_symbol2,
+            &base_symbol3,
+            &quote_symbol3,
+            None,
+            None,
             None,
             sleep_sec_between_ws_connect,
             disconnects_before_exit,
@@ -645,7 +534,7 @@ pub async fn main() -> anyhow::Result<()> {
         phoenix_status_rx,
         fill_status_rx,
         oracle_status_rx,
-        &sdk1,
+        &sdk2,
         &rpc_client,
         &tpu_client,
         &trader,

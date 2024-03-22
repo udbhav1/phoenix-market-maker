@@ -7,7 +7,7 @@ use phoenix_market_maker::network_utils::{
 #[allow(unused_imports)]
 use phoenix_market_maker::network_utils::{get_time_ms, get_time_s};
 use phoenix_market_maker::phoenix_utils::{
-    book_to_aggregated_levels, symbols_to_market_address, Book, BookUpdate,
+    book_to_aggregated_levels, symbols_to_market_address, Book, ExchangeUpdate,
 };
 
 use clap::Parser;
@@ -96,8 +96,8 @@ fn process_book_and_oracle_price(
 }
 
 async fn track(
-    mut phoenix_rx: mpsc::Receiver<BookUpdate>,
-    mut oracle_rx: mpsc::Receiver<BookUpdate>,
+    mut phoenix_rx: mpsc::Receiver<ExchangeUpdate>,
+    mut oracle_rx: mpsc::Receiver<ExchangeUpdate>,
     mut phoenix_status_rx: mpsc::Receiver<ConnectionStatus>,
     mut oracle_status_rx: mpsc::Receiver<ConnectionStatus>,
     oracle_enabled: bool,
@@ -115,13 +115,13 @@ async fn track(
         tokio::select! {
             Some(phoenix_update) = phoenix_rx.recv() => {
                 latest_phoenix_book = match phoenix_update {
-                    BookUpdate::Phoenix(phoenix_recv) => Some(phoenix_recv),
+                    ExchangeUpdate::Phoenix(phoenix_recv) => Some(phoenix_recv),
                     _ => panic!("Received non-Phoenix update in Phoenix channel")
                 };
             },
             Some(oracle_update) = oracle_rx.recv() => {
                 latest_oracle_bbo = match oracle_update {
-                    BookUpdate::Oracle(oracle_recv) => Some(oracle_recv),
+                    ExchangeUpdate::Oracle(oracle_recv) => Some(oracle_recv),
                     _ => panic!("Received non-oracle update in oracle channel")
                 };
             },
@@ -294,6 +294,8 @@ pub async fn main() -> anyhow::Result<()> {
             &base_symbol1,
             &quote_symbol1,
             Some(market_address1),
+            None,
+            None,
             sleep_sec_between_ws_connect,
             disconnects_before_exit,
         )
@@ -308,6 +310,8 @@ pub async fn main() -> anyhow::Result<()> {
                 oracle_status_tx,
                 &base_symbol2,
                 &quote_symbol2,
+                None,
+                None,
                 None,
                 sleep_sec_between_ws_connect,
                 disconnects_before_exit,

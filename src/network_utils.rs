@@ -1,54 +1,10 @@
 use anyhow::anyhow;
-use serde::{Deserialize, Serialize};
 use solana_sdk::signature::{read_keypair_file, Keypair};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-pub const TRANSACTION_SUBSCRIBE_JSON: &str = r#"
-{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "transactionSubscribe",
-    "params": [
-        {
-            "vote": false,
-            "failed": false,
-            "accountRequired": ["{1}"]
-        },
-        {
-            "commitment": "confirmed",
-            "encoding": "base64",
-            "transaction_details": "full",
-            "showRewards": false,
-            "maxSupportedTransactionVersion": 0
-        }
-    ]
-}"#;
 
 pub enum ConnectionStatus {
     Connected,
     Disconnected,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TransactionSubscribeConfirmation {
-    pub jsonrpc: String,
-    pub result: i64,
-    pub id: i32,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TransactionSubscribeResponse {
-    pub params: TransactionSubscribeParams,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TransactionSubscribeParams {
-    pub result: TransactionSubscribeParamsResult,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TransactionSubscribeParamsResult {
-    pub signature: String,
 }
 
 pub fn get_payer_keypair_from_path(path: &str) -> anyhow::Result<Keypair> {

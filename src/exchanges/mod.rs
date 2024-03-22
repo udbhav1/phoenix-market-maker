@@ -1,8 +1,9 @@
 pub mod okx;
 pub mod phoenix;
+pub mod phoenix_fill;
 
 use crate::network_utils::ConnectionStatus;
-use crate::phoenix_utils::BookUpdate;
+use crate::phoenix_utils::ExchangeUpdate;
 
 use std::str::FromStr;
 
@@ -16,26 +17,41 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
 
-pub trait ExchangeWsHandler {
+use phoenix_sdk::sdk_client::SDKClient;
+use solana_sdk::pubkey::Pubkey;
+
+pub trait ExchangeWebsocketHandler {
     type Confirmation: DeserializeOwned;
     type Response: DeserializeOwned;
 
     fn get_name() -> String;
+
     fn get_ws_url() -> String;
+
     fn get_subscribe_json(
         base_symbol: &str,
         quote_symbol: &str,
         market_address: Option<String>,
     ) -> String;
-    fn parse_confirmation(s: &str) -> anyhow::Result<String>;
-    fn parse_response(s: &str) -> anyhow::Result<BookUpdate>;
+
+    #[allow(async_fn_in_trait)]
+    async fn parse_confirmation(s: &str) -> anyhow::Result<String>;
+
+    #[allow(async_fn_in_trait)]
+    async fn parse_response(
+        s: &str,
+        trader_pubkey: Option<Pubkey>,
+        sdk: Option<&SDKClient>,
+    ) -> anyhow::Result<Vec<ExchangeUpdate>>;
 }
 
-async fn handle_exchange_stream<Exchange: ExchangeWsHandler>(
+async fn handle_exchange_stream<Exchange: ExchangeWebsocketHandler>(
     url: Url,
     subscribe_msg: Message,
-    tx: Sender<BookUpdate>,
+    tx: Sender<ExchangeUpdate>,
     status_tx: Sender<ConnectionStatus>,
+    trader_pubkey: Option<Pubkey>,
+    sdk: Option<&SDKClient>,
 ) -> anyhow::Result<()> {
     let exchange_name = Exchange::get_name();
 
@@ -54,16 +70,18 @@ async fn handle_exchange_stream<Exchange: ExchangeWsHandler>(
             Ok(msg) => match msg {
                 Message::Text(s) => {
                     if is_first_message {
-                        let id = Exchange::parse_confirmation(&s)?;
+                        let id = Exchange::parse_confirmation(&s).await?;
                         debug!("{} subscription confirmed with ID: {}", exchange_name, id);
                         is_first_message = false;
                     } else {
                         info!("Received {} update #{}", exchange_name, i);
                         i += 1;
 
-                        let parsed = Exchange::parse_response(&s)?;
-
-                        tx.send(parsed).await?;
+                        let parsed_updates =
+                            Exchange::parse_response(&s, trader_pubkey, sdk).await?;
+                        for update in parsed_updates {
+                            tx.send(update).await?;
+                        }
                     }
                 }
                 _ => {
@@ -80,12 +98,15 @@ async fn handle_exchange_stream<Exchange: ExchangeWsHandler>(
     Ok(())
 }
 
-pub async fn exchange_stream<Exchange: ExchangeWsHandler>(
-    tx: Sender<BookUpdate>,
+/// trader_pubkey and sdk are only necessary for the phoenix fill websocket to parse fills
+pub async fn exchange_stream<Exchange: ExchangeWebsocketHandler>(
+    tx: Sender<ExchangeUpdate>,
     status_tx: Sender<ConnectionStatus>,
     base_symbol: &str,
     quote_symbol: &str,
     market_address: Option<String>,
+    trader_pubkey: Option<Pubkey>,
+    sdk: Option<&SDKClient>,
     sleep_sec_between_ws_connect: u64,
     disconnects_before_exit: usize,
 ) -> anyhow::Result<()> {
@@ -106,6 +127,8 @@ pub async fn exchange_stream<Exchange: ExchangeWsHandler>(
             subscribe_msg.clone(),
             tx.clone(),
             status_tx.clone(),
+            trader_pubkey.clone(),
+            sdk,
         )
         .await
         {

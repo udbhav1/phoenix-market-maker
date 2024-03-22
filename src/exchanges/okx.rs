@@ -1,13 +1,16 @@
 use crate::phoenix_utils::OracleRecv;
-use crate::{network_utils::get_time_ms, phoenix_utils::BookUpdate};
+use crate::{network_utils::get_time_ms, phoenix_utils::ExchangeUpdate};
 
-use super::ExchangeWsHandler;
+use super::ExchangeWebsocketHandler;
 use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 
-const OKX_WS_URL: &str = "wss://wsaws.okx.com:8443/ws/v5/public";
+use phoenix_sdk::sdk_client::SDKClient;
+use solana_sdk::pubkey::Pubkey;
 
-const OKX_SUBSCRIBE_JSON: &str = r#"
+const WS_URL: &str = "wss://wsaws.okx.com:8443/ws/v5/public";
+
+const SUBSCRIBE_JSON: &str = r#"
 {
     "op": "subscribe",
     "args": [
@@ -62,7 +65,7 @@ pub struct OkxData {
 
 pub struct OkxHandler;
 
-impl ExchangeWsHandler for OkxHandler {
+impl ExchangeWebsocketHandler for OkxHandler {
     type Confirmation = OkxSubscribeConfirmation;
     type Response = OkxResponse;
 
@@ -71,7 +74,7 @@ impl ExchangeWsHandler for OkxHandler {
     }
 
     fn get_ws_url() -> String {
-        OKX_WS_URL.to_string()
+        WS_URL.to_string()
     }
 
     fn get_subscribe_json(
@@ -83,17 +86,21 @@ impl ExchangeWsHandler for OkxHandler {
             "USDC" | "USDT" => format!("{}-USDT-SWAP", base_symbol.to_uppercase()),
             _ => panic!("TODO check out non-usdc/t Okx pairs"),
         };
-        OKX_SUBSCRIBE_JSON.replace("{1}", &instrument)
+        SUBSCRIBE_JSON.replace("{1}", &instrument)
     }
 
-    fn parse_confirmation(s: &str) -> anyhow::Result<String> {
+    async fn parse_confirmation(s: &str) -> anyhow::Result<String> {
         let confirmation: OkxSubscribeConfirmation = serde_json::from_str(&s)
             .with_context(|| format!("Failed to deserialize Okx subscribe confirmation: {}", s))?;
 
         Ok(confirmation.connId)
     }
 
-    fn parse_response(s: &str) -> anyhow::Result<BookUpdate> {
+    async fn parse_response(
+        s: &str,
+        _trader_pubkey: Option<Pubkey>,
+        _sdk: Option<&SDKClient>,
+    ) -> anyhow::Result<Vec<ExchangeUpdate>> {
         let timestamp_ms = get_time_ms()?;
         let response: OkxResponse = serde_json::from_str(&s)
             .with_context(|| format!("Failed to deserialize Okx response: {}", s))?;
@@ -102,12 +109,12 @@ impl ExchangeWsHandler for OkxHandler {
             .first()
             .ok_or_else(|| anyhow!("No data in Okx response"))?;
 
-        Ok(BookUpdate::Oracle(OracleRecv {
+        Ok(vec![ExchangeUpdate::Oracle(OracleRecv {
             bid: data.bidPx.parse()?,
             bid_size: data.bidSz.parse()?,
             ask: data.askPx.parse()?,
             ask_size: data.askSz.parse()?,
             timestamp_ms,
-        }))
+        })])
     }
 }

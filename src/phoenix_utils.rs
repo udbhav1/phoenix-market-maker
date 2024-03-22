@@ -27,8 +27,9 @@ use solana_sdk::{
 
 pub type Book = Orderbook<FIFOOrderId, PhoenixOrder>;
 
-pub enum BookUpdate {
+pub enum ExchangeUpdate {
     Phoenix(PhoenixRecv),
+    PhoenixFill(PhoenixFillRecv),
     Oracle(OracleRecv),
 }
 
@@ -37,6 +38,19 @@ pub struct PhoenixRecv {
     pub book: Book,
     pub timestamp_ms: u64,
     pub slot: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PhoenixFillRecv {
+    pub price: u64,
+    pub size: u64,
+    pub side: Side,
+    pub maker: String,
+    pub taker: String,
+    pub slot: u64,
+    pub timestamp: i64,
+    pub local_timestamp_ms: u64,
+    pub signature: String,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -52,18 +66,6 @@ impl OracleRecv {
     pub fn midpoint(&self) -> f64 {
         (self.bid + self.ask) / 2.0
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct Fill {
-    pub price: u64,
-    pub size: u64,
-    pub side: Side,
-    pub maker: String,
-    pub taker: String,
-    pub slot: u64,
-    pub timestamp: i64,
-    pub signature: String,
 }
 
 // phoenix_sdk::sdk_client::JsonMarketConfig with token array

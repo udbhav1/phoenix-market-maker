@@ -1,13 +1,16 @@
 use crate::network_utils::{get_solana_ws_url, get_time_ms};
-use crate::phoenix_utils::{get_book_from_account_data, BookUpdate, PhoenixRecv};
+use crate::phoenix_utils::{get_book_from_account_data, ExchangeUpdate, PhoenixRecv};
 
-use super::ExchangeWsHandler;
+use super::ExchangeWebsocketHandler;
 use std::env;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-const PHOENIX_SUBSCRIBE_JSON: &str = r#"
+use phoenix_sdk::sdk_client::SDKClient;
+use solana_sdk::pubkey::Pubkey;
+
+const SUBSCRIBE_JSON: &str = r#"
 {
     "jsonrpc": "2.0",
     "id": 1,
@@ -65,7 +68,7 @@ pub struct PhoenixValue {
 
 pub struct PhoenixHandler;
 
-impl ExchangeWsHandler for PhoenixHandler {
+impl ExchangeWebsocketHandler for PhoenixHandler {
     type Confirmation = PhoenixSubscribeConfirmation;
     type Response = PhoenixResponse;
 
@@ -84,17 +87,21 @@ impl ExchangeWsHandler for PhoenixHandler {
         _quote_symbol: &str,
         market_address: Option<String>,
     ) -> String {
-        PHOENIX_SUBSCRIBE_JSON.replace("{1}", &market_address.unwrap())
+        SUBSCRIBE_JSON.replace("{1}", &market_address.unwrap())
     }
 
-    fn parse_confirmation(s: &str) -> anyhow::Result<String> {
+    async fn parse_confirmation(s: &str) -> anyhow::Result<String> {
         let confirmation: PhoenixSubscribeConfirmation = serde_json::from_str(&s)
             .with_context(|| format!("Failed to deserialize Okx subscribe confirmation: {}", s))?;
 
         Ok(confirmation.id.to_string())
     }
 
-    fn parse_response(s: &str) -> anyhow::Result<BookUpdate> {
+    async fn parse_response(
+        s: &str,
+        _trader_pubkey: Option<Pubkey>,
+        _sdk: Option<&SDKClient>,
+    ) -> anyhow::Result<Vec<ExchangeUpdate>> {
         let timestamp_ms = get_time_ms()?;
 
         let response: PhoenixResponse = serde_json::from_str(&s)
@@ -102,10 +109,10 @@ impl ExchangeWsHandler for PhoenixHandler {
         let book = get_book_from_account_data(response.params.result.value.data)?;
         let slot = response.params.result.context.slot;
 
-        Ok(BookUpdate::Phoenix(PhoenixRecv {
+        Ok(vec![ExchangeUpdate::Phoenix(PhoenixRecv {
             book,
             timestamp_ms,
             slot,
-        }))
+        })])
     }
 }
