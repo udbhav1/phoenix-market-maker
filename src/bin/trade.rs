@@ -361,10 +361,15 @@ pub async fn main() -> anyhow::Result<()> {
         .with_ansi(false);
     let stdout_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stdout);
 
+    let filter_string = format!(
+        "phoenix_market_maker={0},trade={0},solana_client=error",
+        log_level
+    );
+
     tracing_subscriber::registry()
         .with(stdout_layer)
         .with(file_appender)
-        .with(EnvFilter::new(log_level))
+        .with(EnvFilter::new(filter_string))
         .init();
 
     let config = match CONFIG_FILE.as_ref() {

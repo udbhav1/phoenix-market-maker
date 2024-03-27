@@ -98,7 +98,7 @@ async fn handle_exchange_stream<Exchange: ExchangeWebsocketHandler>(
                         let id = Exchange::parse_confirmation(&s).await?;
                         debug!("{} subscription confirmed with ID: {}", exchange_name, id);
                     } else {
-                        info!("Received {} update #{}", exchange_name, i);
+                        debug!("Received {} update #{}", exchange_name, i);
 
                         let parsed_updates =
                             Exchange::parse_response(&s, trader_pubkey, sdk).await?;

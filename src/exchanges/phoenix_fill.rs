@@ -113,7 +113,6 @@ impl ExchangeWebsocketHandler for PhoenixFillHandler {
         for event in events {
             match event.details {
                 MarketEventDetails::Fill(f) => {
-                    println!("{:?}", f);
                     if f.maker == trader_pubkey || f.taker == trader_pubkey {
                         let fill = PhoenixFillRecv {
                             price: f.price_in_ticks,
