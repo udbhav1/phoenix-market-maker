@@ -115,6 +115,12 @@ impl ExchangeWebsocketHandler for KrakenHandler {
         quote_symbol: &str,
         _market_address: Option<String>,
     ) -> String {
+        // why does phoenix use $WIF instead of WIF
+        let base_symbol = if base_symbol.starts_with("$") {
+            base_symbol.strip_prefix("$").unwrap()
+        } else {
+            base_symbol
+        };
         let instrument = match quote_symbol.to_uppercase().as_str() {
             "USDC" | "USDT" => format!("{}/USD", base_symbol.to_uppercase()),
             _ => panic!("TODO check out non-usdc/t Kraken pairs"),

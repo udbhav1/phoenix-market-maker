@@ -7,6 +7,8 @@ use std::str::FromStr;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
+use tracing::{debug, error, info, trace, warn};
 
 use phoenix_sdk::sdk_client::{MarketEventDetails, SDKClient};
 use solana_sdk::pubkey::Pubkey;
@@ -113,6 +115,7 @@ impl ExchangeWebsocketHandler for PhoenixFillHandler {
         for event in events {
             match event.details {
                 MarketEventDetails::Fill(f) => {
+                    debug!("{:?}", f);
                     if f.maker == trader_pubkey || f.taker == trader_pubkey {
                         let fill = PhoenixFillRecv {
                             price: f.price_in_ticks,

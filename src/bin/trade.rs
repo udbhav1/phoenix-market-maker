@@ -12,8 +12,9 @@ use phoenix_market_maker::network_utils::{
 #[allow(unused_imports)]
 use phoenix_market_maker::network_utils::{get_time_ms, get_time_s};
 use phoenix_market_maker::phoenix_utils::{
-    book_to_aggregated_levels, get_midpoint, get_quotes_from_width_and_lean, get_rwap,
-    send_trade_rpc, send_trade_tpu, setup_maker, symbols_to_market_address, PhoenixFillRecv,
+    book_to_aggregated_levels, generate_trade_csv_columns, generate_trade_csv_row, get_midpoint,
+    get_quotes_from_width_and_lean, get_rwap, send_trade_rpc, send_trade_tpu, setup_maker,
+    symbols_to_market_address, PhoenixFillRecv,
 };
 
 use clap::Parser;
@@ -45,36 +46,6 @@ use solana_client::tpu_client::{TpuClient, TpuClientConfig};
 use solana_sdk::{
     commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Keypair, signer::Signer,
 };
-
-fn generate_csv_columns() -> Vec<String> {
-    vec![
-        "timestamp".to_string(),
-        "slot".to_string(),
-        "side".to_string(),
-        "price".to_string(),
-        "size".to_string(),
-        "maker".to_string(),
-        "taker".to_string(),
-        "signature".to_string(),
-    ]
-}
-
-fn generate_csv_row(fill: &PhoenixFillRecv) -> Vec<String> {
-    let side = match fill.side {
-        Side::Bid => "buy",
-        Side::Ask => "sell",
-    };
-    vec![
-        fill.timestamp.to_string(),
-        fill.slot.to_string(),
-        side.to_owned(),
-        fill.price.to_string(),
-        fill.size.to_string(),
-        fill.maker.to_string(),
-        fill.taker.to_string(),
-        fill.signature.to_string(),
-    ]
-}
 
 async fn trading_logic(
     mut phoenix_rx: mpsc::Receiver<ExchangeUpdate>,
@@ -150,7 +121,7 @@ async fn trading_logic(
 
                 match csv_writer {
                     Some(ref mut w) => {
-                        let row = generate_csv_row(&PhoenixFillRecv {
+                        let row = generate_trade_csv_row(&PhoenixFillRecv {
                             side: my_side,
                             ..fill
                         });
@@ -218,21 +189,23 @@ async fn trading_logic(
                 let inventory_ratio = (base_inventory as f64) / 100.0 / dump_threshold;
                 let inventory_ratio = inventory_ratio.clamp(-1.0, 1.0);
                 let lean = max_lean * inventory_ratio;
+                // let (bid_price, ask_price) =
+                //     get_quotes_from_width_and_lean(midpoint, width_bps, lean);
                 let (bid_price, ask_price) =
-                    get_quotes_from_width_and_lean(midpoint, width_bps, lean);
+                    get_quotes_from_width_and_lean(midpoint, width - 2.0, lean);
 
                 let mut bid_size = base_size;
                 let mut ask_size = base_size;
                 if base_inventory > 0 {
                     if base_inventory.abs() as f64 / 100.0 >= dump_threshold {
                         bid_size = 0.0;
+                        ask_size = base_inventory.abs() as f64 / 100.0;
                     }
-                    ask_size = base_inventory.abs() as f64 / 100.0;
                 } else if base_inventory < 0 {
                     if base_inventory.abs() as f64 / 100.0 >= dump_threshold {
                         ask_size = 0.0;
+                        bid_size = base_inventory.abs() as f64 / 100.0;
                     }
-                    bid_size = base_inventory.abs() as f64 / 100.0;
                 }
 
                 info!(
@@ -285,7 +258,7 @@ async fn trading_logic(
                         asks,
                         client_order_id: Some(110110110),
                         failed_multiple_limit_order_behavior:
-                            FailedMultipleLimitOrderBehavior::FailOnInsufficientFundsAndFailOnCross,
+                            FailedMultipleLimitOrderBehavior::FailOnInsufficientFundsAndAmendOnCross,
                     },
                 );
                 ixs.push(place_multiple_orders);
@@ -387,7 +360,7 @@ pub async fn main() -> anyhow::Result<()> {
 
     let rpc_client = RpcClient::new_with_timeout_and_commitment(
         network_url.clone(),
-        Duration::from_secs(60),
+        Duration::from_secs(30),
         CommitmentConfig::confirmed(),
     );
 
@@ -414,6 +387,11 @@ pub async fn main() -> anyhow::Result<()> {
         sdk1.raw_base_units_per_base_lot(&market_pubkey)?,
     );
 
+    let start = Instant::now();
+    rpc_client.get_latest_blockhash()?;
+    let end = Instant::now();
+    info!("Time to get blockhash: {:?}", end.duration_since(start));
+
     match setup_maker(&sdk1, &rpc_client, &trader, &market_pubkey).await? {
         Some(sig) => {
             info!("Setup tx signature: {:?}", sig);
@@ -437,7 +415,7 @@ pub async fn main() -> anyhow::Result<()> {
 
         // If the file was newly created (or is empty), write the headers
         if !file_exists || std::fs::metadata(&path)?.len() == 0 {
-            let columns = generate_csv_columns();
+            let columns = generate_trade_csv_columns();
             writer.write_record(&columns)?;
             writer.flush()?;
         }
@@ -447,11 +425,6 @@ pub async fn main() -> anyhow::Result<()> {
         info!("No CSV provided, not dumping fills");
         None
     };
-
-    let start = Instant::now();
-    rpc_client.get_latest_blockhash()?;
-    let end = Instant::now();
-    info!("Time to get blockhash: {:?}", end.duration_since(start));
 
     let ws_url = get_solana_ws_url(&rpc_network, &api_key)?;
 
@@ -519,7 +492,7 @@ pub async fn main() -> anyhow::Result<()> {
     });
 
     tokio::spawn(async move {
-        exchange_stream::<OkxHandler>(
+        exchange_stream::<KrakenHandler>(
             oracle_tx,
             oracle_status_tx,
             &base_symbol3,

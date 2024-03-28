@@ -427,3 +427,35 @@ pub fn get_rwap(bids: &[(f64, f64)], asks: &[(f64, f64)]) -> f64 {
 
     (bid * ask_size + ask * bid_size) / (bid_size + ask_size)
 }
+
+pub fn generate_trade_csv_columns() -> Vec<String> {
+    vec![
+        "timestamp".to_string(),
+        "local_timestamp".to_string(),
+        "slot".to_string(),
+        "side".to_string(),
+        "price".to_string(),
+        "size".to_string(),
+        "maker".to_string(),
+        "taker".to_string(),
+        "signature".to_string(),
+    ]
+}
+
+pub fn generate_trade_csv_row(fill: &PhoenixFillRecv) -> Vec<String> {
+    let side = match fill.side {
+        Side::Bid => "buy",
+        Side::Ask => "sell",
+    };
+    vec![
+        fill.timestamp.to_string(),
+        fill.local_timestamp_ms.to_string(),
+        fill.slot.to_string(),
+        side.to_owned(),
+        fill.price.to_string(),
+        fill.size.to_string(),
+        fill.maker.to_string(),
+        fill.taker.to_string(),
+        fill.signature.to_string(),
+    ]
+}
