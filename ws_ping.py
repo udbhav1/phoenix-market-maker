@@ -8,8 +8,10 @@ import statistics
 load_dotenv()
 
 api_key = os.getenv("HELIUS_API_KEY")
-# uri = f"wss://mainnet.helius-rpc.com/?api-key={api_key}"
-uri = f"wss://atlas-mainnet.helius-rpc.com/?api-key={api_key}"
+uris = [
+    f"wss://mainnet.helius-rpc.com/?api-key={api_key}",
+    f"wss://atlas-mainnet.helius-rpc.com/?api-key={api_key}",
+]
 N = 10
 
 
@@ -35,10 +37,13 @@ async def measure_ping(uri, n):
         return min_ping, median_ping, max_ping
 
 
-min_ping, median_ping, max_ping = asyncio.get_event_loop().run_until_complete(
-    measure_ping(uri, N)
-)
-print("--------------------")
-print(f"Min Ping:    {min_ping:.2f} ms")
-print(f"Median Ping: {median_ping:.2f} ms")
-print(f"Max Ping:    {max_ping:.2f} ms")
+for uri in uris:
+    print(f"Pinging {uri}")
+    min_ping, median_ping, max_ping = asyncio.get_event_loop().run_until_complete(
+        measure_ping(uri, N)
+    )
+    print("--------------------")
+    print(f"Min Ping:    {min_ping:.2f} ms")
+    print(f"Median Ping: {median_ping:.2f} ms")
+    print(f"Max Ping:    {max_ping:.2f} ms")
+    print()

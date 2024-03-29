@@ -254,6 +254,14 @@ pub async fn main() -> anyhow::Result<()> {
 
     sdk.add_market(&market_pubkey).await?;
 
+    let units_per_lot = sdk.raw_base_units_per_base_lot(&market_pubkey)?;
+    let price_per_tick = sdk.ticks_to_float_price(&market_pubkey, 1)?;
+
+    info!(
+        "Units per lot: {}, Price per tick: {}",
+        units_per_lot, price_per_tick
+    );
+
     let mut csv_writer = if let Some(path) = args.output {
         let path = Path::new(&path);
         let file_exists = path.exists();

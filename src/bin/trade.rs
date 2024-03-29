@@ -59,6 +59,8 @@ async fn trading_logic(
     tpu_client: &TpuClient,
     trader_keypair: &Keypair,
     market_pubkey: &Pubkey,
+    units_per_lot: f64,
+    price_per_tick: f64,
     mut csv_writer: Option<&mut Writer<File>>,
 ) -> anyhow::Result<()> {
     let mut orderbook_connected = false;
@@ -117,7 +119,7 @@ async fn trading_logic(
                     Side::Ask => { base_inventory -= fill.size as i32; "Sold" },
                 };
 
-                warn!("{} {} lots at price {}, Inventory: {}", verb, fill.size, (fill.price as f64) / 10000.0, (base_inventory as f64) / 100.0);
+                warn!("{} {} lots at price {}, Inventory: {}", verb, fill.size, (fill.price as f64) * price_per_tick, (base_inventory as f64) * units_per_lot);
 
                 match csv_writer {
                     Some(ref mut w) => {
@@ -179,6 +181,8 @@ async fn trading_logic(
                 debug!("bids: {:?}", bids);
                 debug!("asks: {:?}", asks);
 
+                let base_inventory_units = (base_inventory as f64) * units_per_lot;
+
                 let midpoint = get_midpoint(&bids, &asks);
                 let rwap = get_rwap(&bids, &asks);
                 let best_bid = bids.first().unwrap().0;
@@ -186,7 +190,7 @@ async fn trading_logic(
                 let width = (best_ask - best_bid) * 10000.0 / midpoint;
 
                 // linearly interpolate up to max_lean
-                let inventory_ratio = (base_inventory as f64) / 100.0 / dump_threshold;
+                let inventory_ratio = base_inventory_units / dump_threshold;
                 let inventory_ratio = inventory_ratio.clamp(-1.0, 1.0);
                 let lean = max_lean * inventory_ratio;
                 // let (bid_price, ask_price) =
@@ -197,14 +201,14 @@ async fn trading_logic(
                 let mut bid_size = base_size;
                 let mut ask_size = base_size;
                 if base_inventory > 0 {
-                    if base_inventory.abs() as f64 / 100.0 >= dump_threshold {
+                    if base_inventory_units.abs() >= dump_threshold {
                         bid_size = 0.0;
-                        ask_size = base_inventory.abs() as f64 / 100.0;
+                        ask_size = base_inventory_units.abs();
                     }
                 } else if base_inventory < 0 {
-                    if base_inventory.abs() as f64 / 100.0 >= dump_threshold {
+                    if base_inventory_units.abs() >= dump_threshold {
                         ask_size = 0.0;
-                        bid_size = base_inventory.abs() as f64 / 100.0;
+                        bid_size = base_inventory_units.abs();
                     }
                 }
 
@@ -216,7 +220,7 @@ async fn trading_logic(
                     ask_price,
                     bid_size,
                     ask_size,
-                    (base_inventory as f64) / 100.0,
+                    base_inventory_units,
                 );
 
                 let mut ixs = vec![cancel_ix.clone()];
@@ -382,9 +386,12 @@ pub async fn main() -> anyhow::Result<()> {
     sdk1.add_market(&market_pubkey).await?;
     sdk2.add_market(&market_pubkey).await?;
 
+    let units_per_lot = sdk1.raw_base_units_per_base_lot(&market_pubkey)?;
+    let price_per_tick = sdk1.ticks_to_float_price(&market_pubkey, 1)?;
+
     info!(
-        "Base units per lot: {}",
-        sdk1.raw_base_units_per_base_lot(&market_pubkey)?,
+        "Units per lot: {}, Price per tick: {}",
+        units_per_lot, price_per_tick
     );
 
     let start = Instant::now();
@@ -519,6 +526,8 @@ pub async fn main() -> anyhow::Result<()> {
         &tpu_client,
         &trader,
         &market_pubkey,
+        units_per_lot,
+        price_per_tick,
         csv_writer.as_mut(),
     )
     .await
