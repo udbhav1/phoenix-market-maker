@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use std::env;
 use std::io::Read;
 use std::mem::size_of;
-use std::time::Instant;
+use std::str::FromStr;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 
@@ -24,6 +26,15 @@ use solana_sdk::{
     compute_budget::ComputeBudgetInstruction, instruction::Instruction, pubkey::Pubkey,
     signature::Keypair, signature::Signature, signer::Signer, transaction::Transaction,
 };
+
+struct BlockhashCache {
+    blockhash: Hash,
+    timestamp: Instant,
+}
+
+lazy_static::lazy_static! {
+    static ref CACHE: Mutex<Option<BlockhashCache>> = Mutex::new(None);
+}
 
 pub type Book = Orderbook<FIFOOrderId, PhoenixOrder>;
 
@@ -194,6 +205,8 @@ pub fn get_book_from_account_data(data: Vec<String>) -> anyhow::Result<Book> {
     //             .map(|_| data)
     //             .ok()
     //     }),
+    let start = Instant::now();
+
     let blob = &data[0];
     let encoding = &data[1];
     let data = match &encoding[..] {
@@ -216,6 +229,9 @@ pub fn get_book_from_account_data(data: Vec<String>) -> anyhow::Result<Book> {
     let market = load_with_dispatch(&meta.market_size_params, bytes)
         .map_err(|_| anyhow!("Market configuration not found"))?
         .inner;
+
+    let elapsed = start.elapsed();
+    debug!("get_book_from_account_data took {:?}", elapsed);
 
     Ok(Orderbook::from_market(
         market,
@@ -283,6 +299,23 @@ pub fn get_ladder(orderbook: &Book, levels: usize, precision: usize) -> String {
 }
 
 pub fn get_latest_valid_blockhash(rpc_client: &RpcClient) -> anyhow::Result<Hash> {
+    let should_cache = bool::from_str(&env::var("BLOCKHASH_CACHE_ENABLED")?)?;
+
+    if should_cache {
+        let cache_lifetime =
+            Duration::from_secs(u64::from_str(&env::var("BLOCKHASH_CACHE_LIFETIME_SEC")?)?);
+
+        if let Ok(cache) = CACHE.try_lock() {
+            if let Some(cached) = cache.as_ref() {
+                if cached.timestamp.elapsed() < cache_lifetime {
+                    debug!("Using cached blockhash");
+                    return Ok(cached.blockhash);
+                }
+            }
+        }
+    }
+
+    debug!("Fetching new blockhash");
     let mut blockhash;
     loop {
         blockhash = rpc_client.get_latest_blockhash()?;
@@ -290,6 +323,17 @@ pub fn get_latest_valid_blockhash(rpc_client: &RpcClient) -> anyhow::Result<Hash
             break;
         }
     }
+
+    if should_cache {
+        if let Ok(mut cache) = CACHE.try_lock() {
+            debug!("Caching blockhash");
+            *cache = Some(BlockhashCache {
+                blockhash,
+                timestamp: Instant::now(),
+            });
+        }
+    }
+
     Ok(blockhash)
 }
 

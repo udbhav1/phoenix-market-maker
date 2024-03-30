@@ -119,7 +119,7 @@ async fn trading_logic(
                     Side::Ask => { base_inventory -= fill.size as i32; "Sold" },
                 };
 
-                warn!("{} {} lots at price {}, Inventory: {}", verb, fill.size, (fill.price as f64) * price_per_tick, (base_inventory as f64) * units_per_lot);
+                warn!("{} {} units at price {}, Inventory: {}", verb, (fill.size as f64) * units_per_lot, (fill.price as f64) * price_per_tick, (base_inventory as f64) * units_per_lot);
 
                 match csv_writer {
                     Some(ref mut w) => {

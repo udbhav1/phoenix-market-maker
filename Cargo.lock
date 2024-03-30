@@ -3047,6 +3047,7 @@ dependencies = [
  "futures 0.3.30",
  "generic-token-faucet",
  "itertools 0.12.1",
+ "lazy_static",
  "phoenix-sdk",
  "phoenix-v1",
  "reqwest",
