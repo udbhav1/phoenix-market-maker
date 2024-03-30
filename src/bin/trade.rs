@@ -12,9 +12,9 @@ use phoenix_market_maker::network_utils::{
 #[allow(unused_imports)]
 use phoenix_market_maker::network_utils::{get_time_ms, get_time_s};
 use phoenix_market_maker::phoenix_utils::{
-    book_to_aggregated_levels, generate_trade_csv_columns, generate_trade_csv_row, get_midpoint,
-    get_quotes_from_width_and_lean, get_rwap, send_trade_rpc, send_trade_tpu, setup_maker,
-    symbols_to_market_address, PhoenixFillRecv,
+    book_to_aggregated_levels, generate_trade_csv_columns, generate_trade_csv_row,
+    get_best_quotes_from_width_and_lean, get_midpoint, get_rwap, get_staggered_quotes_from_bbo,
+    send_trade_rpc, send_trade_tpu, setup_maker, symbols_to_market_address, PhoenixFillRecv,
 };
 
 use clap::Parser;
@@ -76,8 +76,10 @@ async fn trading_logic(
     let use_tpu = bool::from_str(&env::var("TRADE_USE_TPU")?)?;
     let width_bps: f64 = env::var("TRADE_WIDTH_BPS")?.parse()?;
     let base_size: f64 = env::var("TRADE_BASE_SIZE")?.parse()?;
-    let dump_threshold: f64 = env::var("TRADE_DUMP_THRESHOLD")?.parse()?;
+    let max_inventory: f64 = env::var("TRADE_MAX_INVENTORY")?.parse()?;
     let max_lean: f64 = env::var("TRADE_MAX_LEAN")?.parse()?;
+    let levels_per_side: usize = env::var("TRADE_LEVELS_PER_SIDE")?.parse()?;
+    let level_size_multiplier: f64 = env::var("TRADE_LEVEL_SIZE_MULTIPLIER")?.parse()?;
     let time_in_force: u64 = env::var("TRADE_TIME_IN_FORCE")?.parse()?;
 
     info!("Quotes enabled: {}", should_trade);
@@ -189,37 +191,53 @@ async fn trading_logic(
                 let best_ask = asks.first().unwrap().0;
                 let width = (best_ask - best_bid) * 10000.0 / midpoint;
 
-                // linearly interpolate up to max_lean
-                let inventory_ratio = base_inventory_units / dump_threshold;
+                // decide bbo by linearly interpolating up to max_lean
+                let inventory_ratio = base_inventory_units / max_inventory;
                 let inventory_ratio = inventory_ratio.clamp(-1.0, 1.0);
                 let lean = max_lean * inventory_ratio;
-                // let (bid_price, ask_price) =
-                //     get_quotes_from_width_and_lean(midpoint, width_bps, lean);
+                let quote_width_bps = f64::max(2.0, width + 1.0);
                 let (bid_price, ask_price) =
-                    get_quotes_from_width_and_lean(midpoint, width - 2.0, lean);
+                    get_best_quotes_from_width_and_lean(oracle_midpoint, quote_width_bps, lean);
 
+                // decide staggered levels and sizing
                 let mut bid_size = base_size;
                 let mut ask_size = base_size;
                 if base_inventory > 0 {
-                    if base_inventory_units.abs() >= dump_threshold {
+                    if base_inventory_units.abs() >= max_inventory {
                         bid_size = 0.0;
-                        ask_size = base_inventory_units.abs();
+                        ask_size = base_inventory_units.abs() / 4.0;
                     }
                 } else if base_inventory < 0 {
-                    if base_inventory_units.abs() >= dump_threshold {
+                    if base_inventory_units.abs() >= max_inventory {
                         ask_size = 0.0;
-                        bid_size = base_inventory_units.abs();
+                        bid_size = base_inventory_units.abs() / 4.0;
                     }
                 }
 
-                info!(
-                    "Width: {}bps, Distance from oracle: {}bps, Quoting {:.4} @ {:.4}, {}x{}, Inventory: {}",
-                    width.round(),
-                    ((rwap - oracle_midpoint) * 10000.0 / oracle_midpoint).round(),
+                let (staggered_bids, staggered_asks) = get_staggered_quotes_from_bbo(
                     bid_price,
                     ask_price,
                     bid_size,
                     ask_size,
+                    levels_per_side,
+                    level_size_multiplier,
+                );
+
+                debug!(
+                    "Staggered Bids: {:?}, Staggered Asks: {:?}",
+                    staggered_bids, staggered_asks
+                );
+
+                info!(
+                    "Width: {:.1}, Oracle Dist: {:.1}, Quoting {:.1}, {:.4} @ {:.4}, {}x{}, Lean: {:.1}, Inventory: {}",
+                    width,
+                    ((midpoint - oracle_midpoint) * 10000.0 / oracle_midpoint),
+                    quote_width_bps,
+                    bid_price,
+                    ask_price,
+                    bid_size,
+                    ask_size,
+                    lean,
                     base_inventory_units,
                 );
 
@@ -227,29 +245,33 @@ async fn trading_logic(
 
                 let expiry_ts = get_time_s()? + time_in_force;
 
-                let mut bids = Vec::new();
-                let mut asks = Vec::new();
+                let mut bid_orders = Vec::new();
+                let mut ask_orders = Vec::new();
 
-                if bid_size > 0.0 {
-                    bids.push(CondensedOrder {
-                        price_in_ticks: sdk
-                            .float_price_to_ticks_rounded_down(&market_pubkey, bid_price)?,
-                        size_in_base_lots: sdk
-                            .raw_base_units_to_base_lots_rounded_down(&market_pubkey, bid_size)?,
-                        last_valid_slot: None,
-                        last_valid_unix_timestamp_in_seconds: Some(expiry_ts),
-                    });
+                for (price, size) in staggered_bids.iter() {
+                    if *size > 0.0 {
+                        bid_orders.push(CondensedOrder {
+                            price_in_ticks: sdk
+                                .float_price_to_ticks_rounded_down(&market_pubkey, *price)?,
+                            size_in_base_lots: sdk
+                                .raw_base_units_to_base_lots_rounded_down(&market_pubkey, *size)?,
+                            last_valid_slot: None,
+                            last_valid_unix_timestamp_in_seconds: Some(expiry_ts),
+                        });
+                    }
                 }
 
-                if ask_size > 0.0 {
-                    asks.push(CondensedOrder {
-                        price_in_ticks: sdk
-                            .float_price_to_ticks_rounded_down(&market_pubkey, ask_price)?,
-                        size_in_base_lots: sdk
-                            .raw_base_units_to_base_lots_rounded_down(&market_pubkey, ask_size)?,
-                        last_valid_slot: None,
-                        last_valid_unix_timestamp_in_seconds: Some(expiry_ts),
-                    });
+                for (price, size) in staggered_asks.iter() {
+                    if *size > 0.0 {
+                        ask_orders.push(CondensedOrder {
+                            price_in_ticks: sdk
+                                .float_price_to_ticks_rounded_down(&market_pubkey, *price)?,
+                            size_in_base_lots: sdk
+                                .raw_base_units_to_base_lots_rounded_down(&market_pubkey, *size)?,
+                            last_valid_slot: None,
+                            last_valid_unix_timestamp_in_seconds: Some(expiry_ts),
+                        });
+                    }
                 }
 
                 let place_multiple_orders = create_new_multiple_order_instruction(
@@ -258,11 +280,11 @@ async fn trading_logic(
                     &market_metadata.base_mint,
                     &market_metadata.quote_mint,
                     &MultipleOrderPacket {
-                        bids,
-                        asks,
+                        bids: bid_orders,
+                        asks: ask_orders,
                         client_order_id: Some(110110110),
                         failed_multiple_limit_order_behavior:
-                            FailedMultipleLimitOrderBehavior::FailOnInsufficientFundsAndAmendOnCross,
+                            FailedMultipleLimitOrderBehavior::SkipOnInsufficientFundsAndAmendOnCross,
                     },
                 );
                 ixs.push(place_multiple_orders);
@@ -443,7 +465,7 @@ pub async fn main() -> anyhow::Result<()> {
     let tpu_client = TpuClient::new(
         Arc::new(rpc_for_tpu),
         &ws_url,
-        TpuClientConfig { fanout_slots: 12 },
+        TpuClientConfig { fanout_slots: 100 },
     )?;
 
     let (phoenix_tx, phoenix_rx) = mpsc::channel(256);

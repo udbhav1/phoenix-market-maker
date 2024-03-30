@@ -446,7 +446,11 @@ pub fn send_trade_tpu(
 /// -1 means we're unacceptably short so bid at fair value
 /// 1 means we're unacceptably long so ask at fair value
 /// 0 means we're neutral so quote symmetrically
-pub fn get_quotes_from_width_and_lean(fair_value: f64, width_bps: f64, lean: f64) -> (f64, f64) {
+pub fn get_best_quotes_from_width_and_lean(
+    fair_value: f64,
+    width_bps: f64,
+    lean: f64,
+) -> (f64, f64) {
     let width = fair_value * width_bps / 10_000.0;
 
     let bid_adjustment = (1.0 + lean) * width / 2.0;
@@ -456,6 +460,37 @@ pub fn get_quotes_from_width_and_lean(fair_value: f64, width_bps: f64, lean: f64
     let ask = fair_value + ask_adjustment;
 
     (bid, ask)
+}
+
+pub fn get_staggered_quotes_from_bbo(
+    best_bid: f64,
+    best_ask: f64,
+    bid_base_size: f64,
+    ask_base_size: f64,
+    levels_per_side: usize,
+    level_size_multiplier: f64,
+) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+    let mut bids = vec![];
+    let mut asks = vec![];
+
+    let bbo_spread = best_ask - best_bid;
+    let level_gap = bbo_spread / 2.0;
+
+    let mut bid_size = bid_base_size;
+    let mut ask_size = ask_base_size;
+
+    for i in 0..levels_per_side {
+        let bid = best_bid - level_gap * (i as f64 + 1.0);
+        let ask = best_ask + level_gap * (i as f64 + 1.0);
+
+        bids.push((bid, bid_size));
+        asks.push((ask, ask_size));
+
+        bid_size *= level_size_multiplier;
+        ask_size *= level_size_multiplier;
+    }
+
+    (bids, asks)
 }
 
 pub fn get_midpoint(bids: &[(f64, f64)], asks: &[(f64, f64)]) -> f64 {
