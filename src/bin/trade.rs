@@ -195,7 +195,7 @@ async fn trading_logic(
                 let inventory_ratio = base_inventory_units / max_inventory;
                 let inventory_ratio = inventory_ratio.clamp(-1.0, 1.0);
                 let lean = max_lean * inventory_ratio;
-                let quote_width_bps = f64::max(2.0, width + 1.0);
+                let quote_width_bps = f64::max(2.0, f64::min(width, width_bps));
                 let (bid_price, ask_price) =
                     get_best_quotes_from_width_and_lean(oracle_midpoint, quote_width_bps, lean);
 
@@ -205,12 +205,12 @@ async fn trading_logic(
                 if base_inventory > 0 {
                     if base_inventory_units.abs() >= max_inventory {
                         bid_size = 0.0;
-                        ask_size = base_inventory_units.abs() / 4.0;
+                        ask_size = f64::max(base_size, base_inventory_units.abs() / 10.0);
                     }
                 } else if base_inventory < 0 {
                     if base_inventory_units.abs() >= max_inventory {
                         ask_size = 0.0;
-                        bid_size = base_inventory_units.abs() / 4.0;
+                        bid_size = f64::max(base_size, base_inventory_units.abs() / 10.0);
                     }
                 }
 
