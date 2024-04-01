@@ -1,40 +1,25 @@
+use crate::network_utils::get_latest_valid_blockhash;
+
 use anyhow::anyhow;
 use base64::prelude::*;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::env;
 use std::io::Read;
 use std::mem::size_of;
-use std::str::FromStr;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 
 use phoenix::program::{dispatch_market::load_with_dispatch, MarketHeader};
-use phoenix::state::markets::FIFOOrderId;
-use phoenix::state::Side;
+use phoenix::state::{markets::FIFOOrderId, Side};
 use phoenix_sdk::orderbook::{Orderbook, OrderbookKey, OrderbookValue};
 use phoenix_sdk::sdk_client::{MarketMetadata, PhoenixOrder, SDKClient};
 use solana_client::rpc_client::RpcClient;
-use solana_client::rpc_config::RpcSendTransactionConfig;
-use solana_client::tpu_client::TpuClient;
-use solana_program::hash::Hash;
-use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::{
-    compute_budget::ComputeBudgetInstruction, instruction::Instruction, pubkey::Pubkey,
-    signature::Keypair, signature::Signature, signer::Signer, transaction::Transaction,
+    pubkey::Pubkey, signature::Keypair, signature::Signature, signer::Signer,
+    transaction::Transaction,
 };
-
-struct BlockhashCache {
-    blockhash: Hash,
-    timestamp: Instant,
-}
-
-lazy_static::lazy_static! {
-    static ref CACHE: Mutex<Option<BlockhashCache>> = Mutex::new(None);
-}
 
 pub type Book = Orderbook<FIFOOrderId, PhoenixOrder>;
 
@@ -298,45 +283,6 @@ pub fn get_ladder(orderbook: &Book, levels: usize, precision: usize) -> String {
     out.join("\n")
 }
 
-pub fn get_latest_valid_blockhash(rpc_client: &RpcClient) -> anyhow::Result<Hash> {
-    let should_cache = bool::from_str(&env::var("BLOCKHASH_CACHE_ENABLED")?)?;
-
-    if should_cache {
-        let cache_lifetime =
-            Duration::from_secs(u64::from_str(&env::var("BLOCKHASH_CACHE_LIFETIME_SEC")?)?);
-
-        if let Ok(cache) = CACHE.try_lock() {
-            if let Some(cached) = cache.as_ref() {
-                if cached.timestamp.elapsed() < cache_lifetime {
-                    debug!("Using cached blockhash");
-                    return Ok(cached.blockhash);
-                }
-            }
-        }
-    }
-
-    debug!("Fetching new blockhash");
-    let mut blockhash;
-    loop {
-        blockhash = rpc_client.get_latest_blockhash()?;
-        if rpc_client.is_blockhash_valid(&blockhash, CommitmentConfig::confirmed())? {
-            break;
-        }
-    }
-
-    if should_cache {
-        if let Ok(mut cache) = CACHE.try_lock() {
-            debug!("Caching blockhash");
-            *cache = Some(BlockhashCache {
-                blockhash,
-                timestamp: Instant::now(),
-            });
-        }
-    }
-
-    Ok(blockhash)
-}
-
 pub async fn setup_maker(
     sdk: &SDKClient,
     rpc_client: &RpcClient,
@@ -367,79 +313,6 @@ pub async fn setup_maker(
     } else {
         return Ok(None);
     }
-}
-
-pub fn add_compute_budget(mut ixs: Vec<Instruction>) -> anyhow::Result<Vec<Instruction>> {
-    let compute_budget = env::var("TRADE_COMPUTE_UNIT_LIMIT")?.parse()?;
-    let compute_price = env::var("TRADE_COMPUTE_UNIT_PRICE")?.parse()?;
-
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_budget);
-    let compute_price_ix = ComputeBudgetInstruction::set_compute_unit_price(compute_price);
-
-    ixs.insert(0, compute_price_ix);
-    ixs.insert(0, compute_budget_ix);
-
-    Ok(ixs)
-}
-
-pub fn send_trade_rpc(
-    rpc_client: &RpcClient,
-    trader_keypair: &Keypair,
-    mut ixs: Vec<Instruction>,
-) -> anyhow::Result<Signature> {
-    let dupes: usize = env::var("TRADE_DUPLICATE_TXS")?.parse()?;
-
-    ixs = add_compute_budget(ixs)?;
-    let blockhash = get_latest_valid_blockhash(rpc_client)?;
-
-    let mut signature = None;
-    let start = Instant::now();
-    for _ in 1..=dupes {
-        signature = Some(rpc_client.send_transaction_with_config(
-            &Transaction::new_signed_with_payer(
-                &ixs,
-                Some(&trader_keypair.pubkey()),
-                &[trader_keypair],
-                blockhash,
-            ),
-            RpcSendTransactionConfig {
-                skip_preflight: true,
-                preflight_commitment: Some(CommitmentLevel::Confirmed),
-                encoding: None,
-                max_retries: Some(0),
-                min_context_slot: None,
-            },
-        )?);
-    }
-    let elapsed = start.elapsed();
-    debug!("RPC trade sent in {}ms", elapsed.as_millis());
-
-    Ok(signature.ok_or(anyhow!("Trade signature not received"))?)
-}
-
-pub fn send_trade_tpu(
-    tpu_client: &TpuClient,
-    trader_keypair: &Keypair,
-    mut ixs: Vec<Instruction>,
-) -> anyhow::Result<()> {
-    let dupes: usize = env::var("TRADE_DUPLICATE_TXS")?.parse()?;
-
-    ixs = add_compute_budget(ixs)?;
-    let blockhash = get_latest_valid_blockhash(tpu_client.rpc_client())?;
-
-    let start = Instant::now();
-    for _ in 1..=dupes {
-        tpu_client.try_send_transaction(&Transaction::new_signed_with_payer(
-            &ixs,
-            Some(&trader_keypair.pubkey()),
-            &[trader_keypair],
-            blockhash,
-        ))?
-    }
-    let elapsed = start.elapsed();
-    debug!("TPU trade sent in {}ms", elapsed.as_millis());
-
-    Ok(())
 }
 
 /// Lean is is between -1 and 1 and represents inventory to offload

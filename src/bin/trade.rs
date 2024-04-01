@@ -10,11 +10,13 @@ use phoenix_market_maker::network_utils::{
     get_network, get_payer_keypair_from_path, get_solana_ws_url, ConnectionStatus,
 };
 #[allow(unused_imports)]
-use phoenix_market_maker::network_utils::{get_time_ms, get_time_s};
+use phoenix_market_maker::network_utils::{
+    get_time_ms, get_time_s, send_trade_rpc, send_trade_tpu,
+};
 use phoenix_market_maker::phoenix_utils::{
     book_to_aggregated_levels, generate_trade_csv_columns, generate_trade_csv_row,
     get_best_quotes_from_width_and_lean, get_midpoint, get_rwap, get_staggered_quotes_from_bbo,
-    send_trade_rpc, send_trade_tpu, setup_maker, symbols_to_market_address, PhoenixFillRecv,
+    setup_maker, symbols_to_market_address, PhoenixFillRecv,
 };
 
 use clap::Parser;
