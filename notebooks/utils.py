@@ -5,6 +5,28 @@ from plotly.subplots import make_subplots
 import pytz
 
 
+def num_decimals(indicator):
+    indicator_str = str(indicator)
+    if "." in indicator_str:
+        decimal_places = len(indicator_str.split(".")[1])
+    else:
+        decimal_places = 0
+
+    return decimal_places
+
+
+def interpolate_red_green(value, min_val, max_val):
+    if value <= min_val:
+        return "red"
+    elif value >= max_val:
+        return "green"
+    else:
+        ratio = (value - min_val) / (max_val - min_val)
+        red = int(255 * (1 - ratio))
+        green = int(255 * ratio)
+        return f"rgb({red},{green},0)"
+
+
 def calculate_pnl(df):
     base_inventory = 0
     quote_inventory = 0
@@ -52,7 +74,9 @@ def get_quantiles(
     return qdf
 
 
-def plot_quantiles(series, name, round_decimals=None, bins=50, width=800, height=300):
+def plot_quantiles(
+    series, name=None, round_decimals=None, bins=50, width=800, height=300
+):
     quantiles = get_quantiles(series, name)
 
     fig = make_subplots(
@@ -86,24 +110,25 @@ def plot_quantiles(series, name, round_decimals=None, bins=50, width=800, height
     )
 
     fig.update_layout(
-        title="",
-        xaxis_title=name,
-        yaxis_title="Frequency",
+        title=name,
+        title_x=0.5,
+        title_font=dict(size=15),
         bargap=0.2,
         width=width,
         height=height,
-        margin=dict(l=0, r=0, t=5, b=5),
+        margin=dict(l=5, r=5, t=(5 if name is None else 30), b=5),
     )
 
-    fig.show()
+    return fig
 
 
 def plot_line(
     x_series,
     y_series_list,
     y_series_names,
-    x_title,
-    y_title,
+    title=None,
+    x_title=None,
+    y_title=None,
     show_legend=True,
     width=800,
     height=300,
@@ -122,7 +147,9 @@ def plot_line(
         )
 
     fig.update_layout(
-        title="",
+        title=title,
+        title_x=0.5,
+        title_font=dict(size=15),
         xaxis_title=x_title,
         yaxis_title=y_title,
         xaxis=dict(showline=True, showgrid=False, linecolor="rgb(204, 204, 204)"),
@@ -131,7 +158,30 @@ def plot_line(
         showlegend=show_legend,
         width=width,
         height=height,
+        margin=dict(l=5, r=5, t=(5 if title is None else 30), b=5),
+    )
+
+    return fig
+
+
+def plot_table(df, columns, column_widths=None, width=1100, height=400):
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Table(
+            header=dict(values=list(df.columns), align="left"),
+            cells=dict(
+                values=[df[c] for c in columns],
+                align="left",
+            ),
+            columnwidth=column_widths,
+        )
+    )
+
+    fig.update_layout(
+        width=width,
+        height=height,
         margin=dict(l=0, r=0, t=5, b=5),
     )
 
-    fig.show()
+    return fig
