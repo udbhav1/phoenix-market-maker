@@ -9,10 +9,6 @@ data/*
 !data/.gitkeep
 logs/*
 !logs/.gitkeep
-notebooks/trades/*
-!notebooks/trades/.gitkeep
-notebooks/data/*
-!notebooks/data/.gitkeep
 
 **/__pycache__/
 **/*.ipynb_checkpoints/

@@ -1,6 +1,6 @@
 extern crate phoenix_market_maker;
 
-use phoenix_market_maker::exchanges::{exchange_stream, ExchangeUpdate};
+use phoenix_market_maker::exchanges::{exchange_stream, ExchangeUpdate, OracleRecv};
 #[allow(unused_imports)]
 use phoenix_market_maker::exchanges::{
     kraken::KrakenHandler, okx::OkxHandler, phoenix::PhoenixHandler,
@@ -12,7 +12,7 @@ use phoenix_market_maker::network_utils::{
 #[allow(unused_imports)]
 use phoenix_market_maker::network_utils::{get_time_ms, get_time_s};
 use phoenix_market_maker::phoenix_utils::{
-    book_to_aggregated_levels, symbols_to_market_address, Book,
+    book_to_aggregated_levels, symbols_to_market_address, Book, PhoenixRecv,
 };
 
 use clap::Parser;
@@ -32,7 +32,13 @@ use solana_cli_config::{Config, CONFIG_FILE};
 use solana_sdk::pubkey::Pubkey;
 
 fn generate_csv_columns(levels: usize) -> Vec<String> {
-    let mut columns = vec!["timestamp_ms".to_string(), "oracle_price".to_string()];
+    let mut columns = vec![
+        "timestamp_ms".to_string(),
+        "oracle_bid".to_string(),
+        "oracle_bid_size".to_string(),
+        "oracle_ask".to_string(),
+        "oracle_ask_size".to_string(),
+    ];
     for i in 1..=levels {
         columns.push(format!("BID{}", i));
         columns.push(format!("BID_SIZE{}", i));
@@ -45,16 +51,27 @@ fn generate_csv_columns(levels: usize) -> Vec<String> {
 
 fn generate_csv_row(
     timestamp: u64,
-    oracle_price: Option<f64>,
+    oracle_bid: Option<(f64, f64)>,
+    oracle_ask: Option<(f64, f64)>,
     bids: &[(f64, f64)],
     asks: &[(f64, f64)],
     levels: usize,
     precision: usize,
 ) -> Vec<String> {
-    let mut row = vec![
-        timestamp.to_string(),
-        oracle_price.map_or(String::new(), |v| v.to_string()),
-    ];
+    let mut row = vec![timestamp.to_string()];
+
+    if let (Some((bid, bid_size)), Some((ask, ask_size))) = (oracle_bid, oracle_ask) {
+        row.push(format!("{:.1$}", bid, precision));
+        row.push(format!("{:.1$}", bid_size, precision));
+        row.push(format!("{:.1$}", ask, precision));
+        row.push(format!("{:.1$}", ask_size, precision));
+    } else {
+        row.push("".to_string());
+        row.push("".to_string());
+        row.push("".to_string());
+        row.push("".to_string());
+    }
+
     for i in 0..levels {
         if i < bids.len() {
             row.push(format!("{:.1$}", bids[i].0, precision));
@@ -76,19 +93,27 @@ fn generate_csv_row(
 }
 
 fn process_book_and_oracle_price(
-    orderbook: &Book,
-    oracle_price: Option<f64>,
+    phoenix_update: &PhoenixRecv,
+    oracle_update: Option<&OracleRecv>,
     timestamp: u64,
     csv_writer: Option<&mut Writer<File>>,
 ) -> anyhow::Result<()> {
     let levels: usize = env::var("TRACK_BOOK_LEVELS")?.parse()?;
     let precision: usize = env::var("TRACK_BOOK_PRECISION")?.parse()?;
 
-    let (bids, asks) = book_to_aggregated_levels(&orderbook, levels);
+    let (bids, asks) = book_to_aggregated_levels(&phoenix_update.book, levels);
 
     match csv_writer {
         Some(w) => {
-            let row = generate_csv_row(timestamp, oracle_price, &bids, &asks, levels, precision);
+            let row = generate_csv_row(
+                timestamp,
+                oracle_update.map(|o| (o.bid, o.bid_size)),
+                oracle_update.map(|o| (o.ask, o.ask_size)),
+                &bids,
+                &asks,
+                levels,
+                precision,
+            );
             w.write_record(&row)?;
             w.flush()?;
         }
@@ -144,8 +169,8 @@ async fn track(
                     (&latest_phoenix_book, &latest_oracle_bbo)
                 {
                     process_book_and_oracle_price(
-                        &phoenix_recv.book,
-                        Some(oracle_recv.midpoint()),
+                        &phoenix_recv,
+                        Some(&oracle_recv),
                         std::cmp::max(phoenix_recv.timestamp_ms, oracle_recv.timestamp_ms),
                         writer_ref,
                     )?;
@@ -153,7 +178,7 @@ async fn track(
             } else {
                 if let Some(book_recv) = &latest_phoenix_book {
                     process_book_and_oracle_price(
-                        &book_recv.book,
+                        &book_recv,
                         None,
                         book_recv.timestamp_ms,
                         writer_ref,

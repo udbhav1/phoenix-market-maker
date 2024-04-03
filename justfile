@@ -14,8 +14,12 @@ trade BASE QUOTE CSV_NAME LOG_NAME KEYPAIR:
 stalk BASE QUOTE CSV_NAME LOG_NAME ADDRESS:
     RUST_BACKTRACE=1 RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin stalk -- -b {{BASE}} -q {{QUOTE}} -o trades/{{CSV_NAME}}.csv -l logs/{{LOG_NAME}}.log -a {{ADDRESS}}
 
+# open track dashboard
+track-ui:
+    voila notebooks/book-dashboard.ipynb
+
 # open fills dashboard
-fills:
+trade-ui:
     voila notebooks/fill-dashboard.ipynb
 
 # print file sizes of data/, logs/, trades/
