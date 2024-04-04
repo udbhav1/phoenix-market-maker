@@ -101,6 +101,7 @@ impl ExchangeWebsocketHandler for OkxHandler {
 
     async fn parse_response(
         s: &str,
+        _market_address: Option<String>,
         _trader_pubkey: Option<Pubkey>,
         _sdk: Option<&SDKClient>,
     ) -> anyhow::Result<Vec<ExchangeUpdate>> {

@@ -12,7 +12,7 @@ use phoenix_market_maker::network_utils::{
 #[allow(unused_imports)]
 use phoenix_market_maker::network_utils::{get_time_ms, get_time_s};
 use phoenix_market_maker::phoenix_utils::{
-    book_to_aggregated_levels, symbols_to_market_address, Book, PhoenixRecv,
+    book_to_aggregated_levels, symbols_to_market_address, PhoenixRecv,
 };
 
 use clap::Parser;

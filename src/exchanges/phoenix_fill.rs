@@ -94,6 +94,7 @@ impl ExchangeWebsocketHandler for PhoenixFillHandler {
 
     async fn parse_response(
         s: &str,
+        market_address: Option<String>,
         trader_pubkey: Option<Pubkey>,
         sdk: Option<&SDKClient>,
     ) -> anyhow::Result<Vec<ExchangeUpdate>> {
@@ -110,13 +111,16 @@ impl ExchangeWebsocketHandler for PhoenixFillHandler {
             .await;
 
         let mut fills = vec![];
+        let market_address = market_address.unwrap();
 
-        let trader_pubkey = trader_pubkey.unwrap();
         for event in events {
+            if event.market.to_string() != market_address {
+                continue;
+            }
             match event.details {
                 MarketEventDetails::Fill(f) => {
                     debug!("{:?}", f);
-                    if f.maker == trader_pubkey || f.taker == trader_pubkey {
+                    if trader_pubkey.map_or(true, |t| f.maker == t || f.taker == t) {
                         let fill = PhoenixFillRecv {
                             price: f.price_in_ticks,
                             size: f.base_lots_filled,

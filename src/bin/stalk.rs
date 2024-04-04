@@ -32,7 +32,7 @@ use solana_sdk::{pubkey::Pubkey, signature::Keypair};
 async fn stalk(
     mut fill_rx: mpsc::Receiver<ExchangeUpdate>,
     mut fill_status_rx: mpsc::Receiver<ConnectionStatus>,
-    stalk_pubkey: &Pubkey,
+    stalk_pubkey: Option<Pubkey>,
     price_per_tick: f64,
     units_per_lot: f64,
     mut csv_writer: Option<&mut Writer<File>>,
@@ -48,22 +48,32 @@ async fn stalk(
                     ExchangeUpdate::PhoenixFill(fill) => fill,
                     _ => panic!("Received non-Fill update in Fill channel")
                 };
-                let mut my_side = fill.side;
-                if fill.taker == stalk_pubkey.to_string() {
-                    my_side = my_side.opposite();
+
+                if let Some(stalk_pubkey) = stalk_pubkey {
+                    let mut my_side = fill.side;
+                    let mut prefix = "Maker";
+                    if fill.taker == stalk_pubkey.to_string() {
+                        my_side = my_side.opposite();
+                        prefix = "Taker";
+                    }
+                    let verb = match my_side {
+                        Side::Bid => { base_inventory += fill.size as i32;  "Bought" },
+                        Side::Ask => { base_inventory -= fill.size as i32; "Sold" },
+                    };
+
+                    warn!("({}) {} {} units at price {}, Inventory: {}", prefix, verb, (fill.size as f64) * units_per_lot, (fill.price as f64) * price_per_tick, (base_inventory as f64) * units_per_lot);
+                } else {
+                    let verb = match fill.side {
+                        Side::Bid => "Bid hit for",
+                        Side::Ask => "Ask lft for",
+                    };
+
+                    warn!("{} {} units at price {}", verb, (fill.size as f64) * units_per_lot, (fill.price as f64) * price_per_tick);
                 }
-
-                let verb = match my_side {
-                    Side::Bid => { base_inventory += fill.size as i32;  "Bought" },
-                    Side::Ask => { base_inventory -= fill.size as i32; "Sold" },
-                };
-
-                warn!("{} {} units at price {}, Inventory: {}", verb, (fill.size as f64) * units_per_lot, (fill.price as f64) * price_per_tick, (base_inventory as f64) * units_per_lot);
 
                 match csv_writer {
                     Some(ref mut w) => {
                         let row = generate_trade_csv_row(&PhoenixFillRecv {
-                            side: my_side,
                             ..fill
                         });
                         w.write_record(&row)?;
@@ -90,9 +100,9 @@ async fn stalk(
 
 #[derive(Parser)]
 struct Args {
-    /// Address of trader to watch.
+    /// Optional address of trader to filter to.
     #[clap(short, long)]
-    address: String,
+    address: Option<String>,
 
     /// Case insensitive: sol, bonk, jto, jup, etc.
     #[clap(short, long)]
@@ -146,9 +156,10 @@ pub async fn main() -> anyhow::Result<()> {
 
     let network_url = get_network(&rpc_network, &api_key)?.to_string();
 
-    let stalk_address = args.address;
-    let stalk_pubkey = Pubkey::from_str(&stalk_address)?;
-    info!("Stalking trader: {}", stalk_address);
+    let stalk_pubkey = args.address.map(|a| {
+        info!("Stalking trader: {}", a);
+        Pubkey::from_str(&a).expect("Invalid stalk address provided")
+    });
 
     let mut sdk = SDKClient::new(&Keypair::new(), &network_url).await?;
 
@@ -208,7 +219,7 @@ pub async fn main() -> anyhow::Result<()> {
             &base_symbol,
             &quote_symbol,
             Some(market_address),
-            Some(stalk_pubkey),
+            stalk_pubkey,
             Some(&sdk),
             sleep_sec_between_ws_connect,
             disconnects_before_exit,
@@ -220,7 +231,7 @@ pub async fn main() -> anyhow::Result<()> {
     stalk(
         fill_rx,
         fill_status_rx,
-        &stalk_pubkey,
+        stalk_pubkey,
         price_per_tick,
         units_per_lot,
         csv_writer.as_mut(),

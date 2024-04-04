@@ -65,6 +65,7 @@ pub trait ExchangeWebsocketHandler {
     #[allow(async_fn_in_trait)]
     async fn parse_response(
         s: &str,
+        market_address: Option<String>,
         trader_pubkey: Option<Pubkey>,
         sdk: Option<&SDKClient>,
     ) -> anyhow::Result<Vec<ExchangeUpdate>>;
@@ -75,6 +76,7 @@ async fn handle_exchange_stream<Exchange: ExchangeWebsocketHandler>(
     subscribe_msg: Message,
     tx: Sender<ExchangeUpdate>,
     status_tx: Sender<ConnectionStatus>,
+    market_address: Option<String>,
     trader_pubkey: Option<Pubkey>,
     sdk: Option<&SDKClient>,
 ) -> anyhow::Result<()> {
@@ -100,8 +102,13 @@ async fn handle_exchange_stream<Exchange: ExchangeWebsocketHandler>(
                     } else {
                         debug!("Received {} update #{}", exchange_name, i);
 
-                        let parsed_updates =
-                            Exchange::parse_response(&s, trader_pubkey, sdk).await?;
+                        let parsed_updates = Exchange::parse_response(
+                            &s,
+                            market_address.clone(),
+                            trader_pubkey,
+                            sdk,
+                        )
+                        .await?;
                         for update in parsed_updates {
                             tx.send(update).await?;
                         }
@@ -140,7 +147,7 @@ pub async fn exchange_stream<Exchange: ExchangeWebsocketHandler>(
     let subscribe_msg = Message::Text(Exchange::get_subscribe_json(
         base_symbol,
         quote_symbol,
-        market_address,
+        market_address.clone(),
     ));
 
     let mut disconnects = 0;
@@ -151,6 +158,7 @@ pub async fn exchange_stream<Exchange: ExchangeWebsocketHandler>(
             subscribe_msg.clone(),
             tx.clone(),
             status_tx.clone(),
+            market_address.clone(),
             trader_pubkey.clone(),
             sdk,
         )

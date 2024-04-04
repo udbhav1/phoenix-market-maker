@@ -27,7 +27,9 @@ def interpolate_red_green(value, min_val, max_val):
         return f"rgb({red},{green},0)"
 
 
-def calculate_pnl(df):
+def calculate_pnl(df, address=None):
+    flip_side = {"buy": "sell", "sell": "buy"}
+
     base_inventory = 0
     quote_inventory = 0
 
@@ -37,10 +39,19 @@ def calculate_pnl(df):
         base_value = row["size"]
         quote_value = row["size"] * row["price"]
 
-        if row["side"] == "buy":
+        side = row["side"]
+        if address is not None:
+            if address == row["taker"]:
+                side = flip_side[side]
+            elif address != row["maker"]:
+                raise Exception(
+                    f"Address {address} is neither maker ({row['maker']}) nor taker ({row['taker']})"
+                )
+
+        if side == "buy":
             base_inventory += base_value
             quote_inventory -= quote_value
-        elif row["side"] == "sell":
+        elif side == "sell":
             base_inventory -= base_value
             quote_inventory += quote_value
 
@@ -156,6 +167,33 @@ def plot_line(
         yaxis=dict(showline=True, showgrid=False, linecolor="rgb(204, 204, 204)"),
         plot_bgcolor="white",
         showlegend=show_legend,
+        width=width,
+        height=height,
+        margin=dict(l=5, r=5, t=(5 if title is None else 30), b=5),
+    )
+
+    return fig
+
+
+def plot_bars(
+    categories, values, title=None, x_title=None, y_title=None, width=800, height=300
+):
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Bar(
+            x=values,
+            y=categories,
+            orientation="h",
+        )
+    )
+
+    fig.update_layout(
+        title=title,
+        title_x=0.5,
+        title_font=dict(size=15),
+        xaxis_title=x_title,
+        yaxis_title=y_title,
         width=width,
         height=height,
         margin=dict(l=5, r=5, t=(5 if title is None else 30), b=5),

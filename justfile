@@ -10,8 +10,12 @@ track-oracle BASE QUOTE CSV_NAME LOG_NAME:
 trade BASE QUOTE CSV_NAME LOG_NAME KEYPAIR:
     RUST_BACKTRACE=1 RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin trade -- -b {{BASE}} -q {{QUOTE}} -o trades/{{CSV_NAME}}.csv -l logs/{{LOG_NAME}}.log -k {{KEYPAIR}}
 
-# stalk ADDRESS on BASE/QUOTE pair, dumping fills to CSV_NAME and logs to LOG_NAME
-stalk BASE QUOTE CSV_NAME LOG_NAME ADDRESS:
+# stalk all fills on BASE/QUOTE pair, dumping fills to CSV_NAME and logs to LOG_NAME
+stalk BASE QUOTE CSV_NAME LOG_NAME:
+    RUST_BACKTRACE=1 RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin stalk -- -b {{BASE}} -q {{QUOTE}} -o trades/{{CSV_NAME}}.csv -l logs/{{LOG_NAME}}.log
+
+# stalk fills on BASE/QUOTE pair, filtering by ADDRESS and dumping fills to CSV_NAME and logs to LOG_NAME
+stalk-address BASE QUOTE CSV_NAME LOG_NAME ADDRESS:
     RUST_BACKTRACE=1 RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo run --release --bin stalk -- -b {{BASE}} -q {{QUOTE}} -o trades/{{CSV_NAME}}.csv -l logs/{{LOG_NAME}}.log -a {{ADDRESS}}
 
 # open track dashboard

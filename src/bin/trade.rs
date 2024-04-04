@@ -114,8 +114,10 @@ async fn trading_logic(
                     _ => panic!("Received non-Fill update in Fill channel")
                 };
                 let mut my_side = fill.side;
+                let mut prefix = "Maker";
                 if fill.taker == trader_keypair.pubkey().to_string() {
                     my_side = my_side.opposite();
+                    prefix = "Taker";
                 }
 
                 let verb = match my_side {
@@ -123,7 +125,7 @@ async fn trading_logic(
                     Side::Ask => { base_inventory -= fill.size as i32; "Sold" },
                 };
 
-                warn!("{} {} units at price {}, Inventory: {}", verb, (fill.size as f64) * units_per_lot, (fill.price as f64) * price_per_tick, (base_inventory as f64) * units_per_lot);
+                warn!("({}) {} {} units at price {}, Inventory: {}", prefix, verb, (fill.size as f64) * units_per_lot, (fill.price as f64) * price_per_tick, (base_inventory as f64) * units_per_lot);
 
                 match csv_writer {
                     Some(ref mut w) => {
