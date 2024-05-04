@@ -146,7 +146,7 @@ pub async fn main() -> anyhow::Result<()> {
         .with_ansi(false);
     let stdout_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stdout);
 
-    let filter_string = format!("phoenix_market_maker={0},stalk={0}", log_level);
+    let filter_string = format!("phoenix_market_maker={0},stalk={0},hyper=error", log_level);
 
     tracing_subscriber::registry()
         .with(stdout_layer)

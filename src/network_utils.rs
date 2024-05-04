@@ -78,11 +78,10 @@ pub fn get_solana_enhanced_ws_url(network_str: &str, api_key: &str) -> anyhow::R
 
 pub fn get_latest_valid_blockhash(rpc_client: &RpcClient) -> anyhow::Result<Hash> {
     let should_cache = bool::from_str(&env::var("BLOCKHASH_CACHE_ENABLED")?)?;
+    let cache_lifetime =
+        Duration::from_secs(u64::from_str(&env::var("BLOCKHASH_CACHE_LIFETIME_SEC")?)?);
 
     if should_cache {
-        let cache_lifetime =
-            Duration::from_secs(u64::from_str(&env::var("BLOCKHASH_CACHE_LIFETIME_SEC")?)?);
-
         if let Ok(cache) = CACHE.try_lock() {
             if let Some(cached) = cache.as_ref() {
                 if cached.timestamp.elapsed() < cache_lifetime {
@@ -115,12 +114,13 @@ pub fn get_latest_valid_blockhash(rpc_client: &RpcClient) -> anyhow::Result<Hash
     Ok(blockhash)
 }
 
-pub fn add_compute_budget(mut ixs: Vec<Instruction>) -> anyhow::Result<Vec<Instruction>> {
-    let compute_budget = env::var("TRADE_COMPUTE_UNIT_LIMIT")?.parse()?;
-    let compute_price = env::var("TRADE_COMPUTE_UNIT_PRICE")?.parse()?;
-
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_budget);
-    let compute_price_ix = ComputeBudgetInstruction::set_compute_unit_price(compute_price);
+pub fn add_compute_budget(
+    mut ixs: Vec<Instruction>,
+    compute_unit_limit: u32,
+    compute_unit_price: u64,
+) -> anyhow::Result<Vec<Instruction>> {
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_unit_limit);
+    let compute_price_ix = ComputeBudgetInstruction::set_compute_unit_price(compute_unit_price);
 
     ixs.insert(0, compute_price_ix);
     ixs.insert(0, compute_budget_ix);
@@ -132,15 +132,16 @@ pub fn send_trade_rpc(
     rpc_client: &RpcClient,
     trader_keypair: &Keypair,
     mut ixs: Vec<Instruction>,
+    compute_unit_limit: u32,
+    compute_unit_price: u64,
+    duplicate_txs: usize,
 ) -> anyhow::Result<Signature> {
-    let dupes: usize = env::var("TRADE_DUPLICATE_TXS")?.parse()?;
-
-    ixs = add_compute_budget(ixs)?;
+    ixs = add_compute_budget(ixs, compute_unit_limit, compute_unit_price)?;
     let blockhash = get_latest_valid_blockhash(rpc_client)?;
 
     let mut signature = None;
     let start = Instant::now();
-    for _ in 1..=dupes {
+    for _ in 1..=duplicate_txs {
         signature = Some(rpc_client.send_transaction_with_config(
             &Transaction::new_signed_with_payer(
                 &ixs,
@@ -167,14 +168,15 @@ pub fn send_trade_tpu(
     tpu_client: &TpuClient,
     trader_keypair: &Keypair,
     mut ixs: Vec<Instruction>,
+    compute_unit_limit: u32,
+    compute_unit_price: u64,
+    duplicate_txs: usize,
 ) -> anyhow::Result<()> {
-    let dupes: usize = env::var("TRADE_DUPLICATE_TXS")?.parse()?;
-
-    ixs = add_compute_budget(ixs)?;
+    ixs = add_compute_budget(ixs, compute_unit_limit, compute_unit_price)?;
     let blockhash = get_latest_valid_blockhash(tpu_client.rpc_client())?;
 
     let start = Instant::now();
-    for _ in 1..=dupes {
+    for _ in 1..=duplicate_txs {
         tpu_client.try_send_transaction(&Transaction::new_signed_with_payer(
             &ixs,
             Some(&trader_keypair.pubkey()),

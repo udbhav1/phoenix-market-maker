@@ -293,10 +293,6 @@ pub async fn setup_maker(
         .get_maker_setup_instructions_for_market(market_pubkey)
         .await?;
 
-    // let compute_price = env::var("TRADE_COMPUTE_UNIT_PRICE")?.parse()?;
-    // let compute_price_ix = ComputeBudgetInstruction::set_compute_unit_price(compute_price);
-    // setup_ixs.insert(0, compute_price_ix);
-
     debug!("Setup ixs: {:?}", setup_ixs);
     if !setup_ixs.is_empty() {
         info!("Finding valid blockhash");

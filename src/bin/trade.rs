@@ -49,7 +49,7 @@ use solana_sdk::{
     commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Keypair, signer::Signer,
 };
 
-async fn trading_logic(
+async fn trade(
     mut phoenix_rx: mpsc::Receiver<ExchangeUpdate>,
     mut fill_rx: mpsc::Receiver<ExchangeUpdate>,
     mut oracle_rx: mpsc::Receiver<ExchangeUpdate>,
@@ -74,7 +74,11 @@ async fn trading_logic(
         &market_pubkey,
         &trader_keypair.pubkey(),
     );
-    let should_trade = bool::from_str(&env::var("TRADE_QUOTES_ENABLED")?)?;
+
+    let duplicate_txs: usize = env::var("TRADE_DUPLICATE_TXS")?.parse()?;
+    let compute_unit_limit: u32 = env::var("TRADE_COMPUTE_UNIT_LIMIT")?.parse()?;
+    let compute_unit_price: u64 = env::var("TRADE_COMPUTE_UNIT_PRICE")?.parse()?;
+    let should_trade = bool::from_str(&env::var("TRADE_TXS_ENABLED")?)?;
     let use_tpu = bool::from_str(&env::var("TRADE_USE_TPU")?)?;
     let width_bps: f64 = env::var("TRADE_WIDTH_BPS")?.parse()?;
     let base_size: f64 = env::var("TRADE_BASE_SIZE")?.parse()?;
@@ -295,9 +299,23 @@ async fn trading_logic(
 
                 if should_trade {
                     if use_tpu {
-                        send_trade_tpu(&tpu_client, &trader_keypair, ixs)?;
+                        send_trade_tpu(
+                            &tpu_client,
+                            &trader_keypair,
+                            ixs,
+                            compute_unit_limit,
+                            compute_unit_price,
+                            duplicate_txs,
+                        )?;
                     } else {
-                        let signature = send_trade_rpc(&rpc_client, &trader_keypair, ixs)?;
+                        let signature = send_trade_rpc(
+                            &rpc_client,
+                            &trader_keypair,
+                            ixs,
+                            compute_unit_limit,
+                            compute_unit_price,
+                            duplicate_txs,
+                        )?;
                         debug!("Trade Signature: {}", signature);
                     }
                 }
@@ -330,7 +348,7 @@ struct Args {
     #[clap(short, long)]
     output: Option<String>,
 
-    /// Optional log file path to mirror stdout.
+    /// Log file path to mirror stdout.
     #[clap(short, long, default_value = "./logs/trade.log")]
     log: String,
 
@@ -365,7 +383,7 @@ pub async fn main() -> anyhow::Result<()> {
     let stdout_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stdout);
 
     let filter_string = format!(
-        "phoenix_market_maker={0},trade={0},solana_client=error",
+        "phoenix_market_maker={0},trade={0},hyper=error,solana_client=error",
         log_level
     );
 
@@ -540,7 +558,7 @@ pub async fn main() -> anyhow::Result<()> {
         .unwrap();
     });
 
-    trading_logic(
+    trade(
         phoenix_rx,
         fill_rx,
         oracle_rx,
